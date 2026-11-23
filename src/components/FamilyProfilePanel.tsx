@@ -7,6 +7,16 @@ import type {
   LanguageOption,
 } from '../types/vayu';
 
+const PM25_PER_CIGARETTE = 22;
+
+const CIGARETTE_PRESETS: { label: string; setValue: number; matches: (count: number) => boolean }[] = [
+  { label: '0 (Non-Smoker)', setValue: 0, matches: (c) => c === 0 },
+  { label: '1–2', setValue: 2, matches: (c) => c >= 1 && c <= 2 },
+  { label: '3–5', setValue: 4, matches: (c) => c >= 3 && c <= 5 },
+  { label: '6–10', setValue: 8, matches: (c) => c >= 6 && c <= 10 },
+  { label: '10+', setValue: 12, matches: (c) => c > 10 },
+];
+
 const HOUSEHOLD_MEMBER_OPTIONS: { value: HouseholdMemberOption; detail: string }[] = [
   { value: 'Healthy Adults', detail: 'Working adults & daily commuters' },
   { value: 'Children', detail: 'Developing lungs, school transit' },
