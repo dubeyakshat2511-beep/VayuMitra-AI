@@ -1,26 +1,64 @@
 import 'dotenv/config';
 import express from 'express';
 import type { Request, Response } from 'express';
+import fs from 'fs';
+import http from 'http';
+import type { IncomingMessage } from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI, Type } from '@google/genai';
+import { WebSocketServer } from 'ws';
+import type { WebSocket } from 'ws';
+import { GoogleGenAI, Modality, Type } from '@google/genai';
+import type { LiveServerMessage } from '@google/genai';
 import type {
   FamilyProfile,
   HourlyAqiPoint,
   LiveAqiData,
+  LiveWeatherSnapshot,
   SafeOutdoorWindow,
   SmogActionPlan,
 } from './src/types/vayu.ts';
 import {
+  calculateCombinedParticulateLoad,
+  getHouseholdMode,
+  isIndividualSoloProfile,
+} from './src/utils/exposureCalculator.ts';
+import {
+  buildFallbackWeatherSnapshot,
+  calculateFogHazard,
+  estimateDewPointC,
+} from './src/utils/fogHazardCalculator.ts';
+import {
   buildLocalSmogPlan,
   buildLocalVoiceBriefing,
 } from './src/utils/localFallbackPlan.ts';
+import {
+  BoundedTtlCache,
+  isValidCoordinatePair,
+  isValidLiveAqiPayload,
+  sanitizeCityQuery,
+  sanitizeFamilyProfile,
+  sanitizeHazardReportText,
+  sanitizeTextInput,
+  sanitizeVoiceChatHistory,
+} from './src/utils/requestValidation.ts';
+import { buildLocalVoiceChatReply } from './src/utils/voiceFallback.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT) || 3000;
+const UPSTREAM_FETCH_TIMEOUT_MS = 10_000;
+const aqiTelemetryCache = new BoundedTtlCache<LiveAqiData>(100, 5 * 60 * 1000);
+
 const app = express();
+app.disable('x-powered-by');
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'geolocation=(), camera=(), microphone=(self)');
+  next();
+});
 app.use(express.json({ limit: '1mb' }));
 
 interface GeoResult {
@@ -67,7 +105,7 @@ async function fetchGeocode(query: string): Promise<GeoResult[]> {
   const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(
     query
   )}&count=8&language=en&format=json`;
-  const resp = await fetch(url);
+  const resp = await fetch(url, { signal: AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS) });
   if (!resp.ok) {
     throw new Error(`Open-Meteo Geocoding API returned HTTP ${resp.status}`);
   }
@@ -221,19 +259,25 @@ app.get('/api/maps-config', (_req: Request, res: Response) => {
 });
 
 app.get('/api/aqi', async (req: Request, res: Response) => {
-  const city = typeof req.query.city === 'string' ? req.query.city.trim() : '';
+  const city = sanitizeCityQuery(req.query.city, 120);
   const latParam = typeof req.query.lat === 'string' ? Number(req.query.lat) : Number.NaN;
   const lonParam = typeof req.query.lon === 'string' ? Number(req.query.lon) : Number.NaN;
-  const hasExactCoords =
-    Number.isFinite(latParam) &&
-    Number.isFinite(lonParam) &&
-    latParam >= -90 &&
-    latParam <= 90 &&
-    lonParam >= -180 &&
-    lonParam <= 180;
+  const hasExactCoords = isValidCoordinatePair(latParam, lonParam);
 
-  if (!hasExactCoords && (!city || city.length < 2)) {
+  if (!hasExactCoords && city.length < 2) {
     res.status(400).json({ error: 'Please provide a valid city, locality name, or coordinates.' });
+    return;
+  }
+
+  const displayNameParam = sanitizeCityQuery(req.query.displayName, 120);
+  const cacheKey = hasExactCoords
+    ? `coords:${latParam.toFixed(3)},${lonParam.toFixed(3)}:${displayNameParam.toLowerCase()}`
+    : `city:${city.toLowerCase()}`;
+
+  const cachedTelemetry = aqiTelemetryCache.get(cacheKey);
+  if (cachedTelemetry) {
+    res.setHeader('Cache-Control', 'public, max-age=180');
+    res.json(cachedTelemetry);
     return;
   }
 
@@ -242,18 +286,9 @@ app.get('/api/aqi', async (req: Request, res: Response) => {
     let displayName: string;
 
     if (hasExactCoords) {
-      const nameParam =
-        typeof req.query.displayName === 'string' && req.query.displayName.trim()
-          ? req.query.displayName.trim()
-          : city || `${latParam.toFixed(2)}, ${lonParam.toFixed(2)}`;
-      const admin1Param =
-        typeof req.query.admin1 === 'string' && req.query.admin1.trim()
-          ? req.query.admin1.trim()
-          : undefined;
-      const countryParam =
-        typeof req.query.country === 'string' && req.query.country.trim()
-          ? req.query.country.trim()
-          : undefined;
+      const nameParam = displayNameParam || city || `${latParam.toFixed(2)}, ${lonParam.toFixed(2)}`;
+      const admin1Param = sanitizeTextInput(req.query.admin1, 80) || undefined;
+      const countryParam = sanitizeTextInput(req.query.country, 80) || undefined;
 
       geo = {
         name: nameParam,
@@ -270,8 +305,15 @@ app.get('/api/aqi', async (req: Request, res: Response) => {
     }
 
     const aqUrl = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${geo.latitude}&longitude=${geo.longitude}&current=us_aqi,pm2_5,pm10,nitrogen_dioxide,ozone,carbon_monoxide&hourly=us_aqi,pm2_5,pm10&timezone=auto&forecast_days=2`;
+    const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${geo.latitude}&longitude=${geo.longitude}&current=temperature_2m,relative_humidity_2m,dew_point_2m,wind_speed_10m,visibility&timezone=auto`;
 
-    const aqResp = await fetch(aqUrl);
+    const [aqResp, weatherResp] = await Promise.all([
+      fetch(aqUrl, { signal: AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS) }),
+      fetch(weatherUrl, { signal: AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS) }).catch(
+        () => null
+      ),
+    ]);
+
     if (!aqResp.ok) {
       throw new Error(`Open-Meteo Air Quality API returned HTTP ${aqResp.status}`);
     }
@@ -294,6 +336,45 @@ app.get('/api/aqi', async (req: Request, res: Response) => {
         pm10: (number | null)[];
       };
     };
+
+    let weatherSnapshot: LiveWeatherSnapshot | null = null;
+    if (weatherResp && weatherResp.ok) {
+      try {
+        const wJson = (await weatherResp.json()) as {
+          current?: {
+            temperature_2m?: number | null;
+            relative_humidity_2m?: number | null;
+            dew_point_2m?: number | null;
+            wind_speed_10m?: number | null;
+            visibility?: number | null;
+          };
+        };
+        const wc = wJson.current;
+        if (wc && typeof wc.temperature_2m === 'number' && typeof wc.relative_humidity_2m === 'number') {
+          const tempC = Number(wc.temperature_2m.toFixed(1));
+          const rhPct = Math.round(wc.relative_humidity_2m);
+          const dewPointC =
+            typeof wc.dew_point_2m === 'number'
+              ? Number(wc.dew_point_2m.toFixed(1))
+              : estimateDewPointC(tempC, rhPct);
+          const windKmh =
+            typeof wc.wind_speed_10m === 'number' ? Number(wc.wind_speed_10m.toFixed(1)) : 6.0;
+          const visibilityM =
+            typeof wc.visibility === 'number' && Number.isFinite(wc.visibility)
+              ? Math.round(wc.visibility)
+              : null;
+          weatherSnapshot = {
+            temperatureC: tempC,
+            dewPointC,
+            relativeHumidityPct: rhPct,
+            windSpeedKmh: windKmh,
+            reportedVisibilityMeters: visibilityM,
+          };
+        }
+      } catch {
+        weatherSnapshot = null;
+      }
+    }
 
     const current = aqJson.current;
     const hourlyRaw = aqJson.hourly;
@@ -342,10 +423,13 @@ app.get('/api/aqi', async (req: Request, res: Response) => {
         ozone: current.ozone != null ? Number(current.ozone.toFixed(1)) : null,
         co: current.carbon_monoxide != null ? Number(current.carbon_monoxide.toFixed(0)) : null,
       },
+      weather: weatherSnapshot,
       safeWindow,
       hourly,
     };
 
+    aqiTelemetryCache.set(cacheKey, payload);
+    res.setHeader('Cache-Control', 'public, max-age=180');
     res.json(payload);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to fetch live AQI data.';
@@ -653,6 +737,34 @@ const smogPlanResponseSchema = {
       },
       required: ['summary', 'smogConditioningNote', 'sessions'],
     },
+    roadSafetyAdvice: {
+      type: Type.OBJECT,
+      description:
+        'Winter Fog & Pothole Commute Shield guidance calibrated to estimated visibility, dew point, humidity, wind, PM2.5, and commute mode.',
+      properties: {
+        visibilityMeters: { type: Type.INTEGER },
+        fogSeverity: { type: Type.STRING },
+        safeSpeedCapKmh: { type: Type.INTEGER },
+        potholeBrakingRisk: { type: Type.STRING },
+        commuteDirective: {
+          type: Type.STRING,
+          description: 'Concise 1-2 sentence road visibility and pothole-braking directive for the user commute.',
+        },
+        hazardChecklist: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+          description: '3 actionable defensive driving/riding precautions for fog and winter potholes.',
+        },
+      },
+      required: [
+        'visibilityMeters',
+        'fogSeverity',
+        'safeSpeedCapKmh',
+        'potholeBrakingRisk',
+        'commuteDirective',
+        'hazardChecklist',
+      ],
+    },
   },
   required: [
     'citySummary',
@@ -663,7 +775,98 @@ const smogPlanResponseSchema = {
     'communityAlert',
     'healthYoga',
     'trainYoga',
+    'roadSafetyAdvice',
   ],
+};
+
+const smokerRecoverySchema = {
+  type: Type.OBJECT,
+  description:
+    'Dedicated Smoker Lung-Recovery Initials & Exercises protocol generated when cigarettesSmokedToday > 0.',
+  properties: {
+    burdenSummary: {
+      type: Type.STRING,
+      description:
+        'Concise 1-2 sentence explanation of combined ambient PM2.5 + cigarette equivalent PM2.5 (~22 µg/m³ per cigarette) lung burden.',
+    },
+    cardioWarning: {
+      type: Type.STRING,
+      description:
+        'Explicit warning against intense outdoor cardio/running when combined ambient AQI and smoking exposure are elevated, recommending a 2-hour post-smoking exertion hold.',
+    },
+    immediateInitials: {
+      type: Type.ARRAY,
+      description:
+        'Exactly 4 immediate first-60-minute recovery steps: warm saline/plain steam inhalation, warm water + vitamin-C/antioxidant hydration, 2-hour outdoor exertion hold, and switching to indoor filtered/sealed air.',
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          id: { type: Type.STRING },
+          title: { type: Type.STRING },
+          timingWindow: { type: Type.STRING },
+          action: { type: Type.STRING },
+          physiologicalReason: { type: Type.STRING },
+        },
+        required: ['id', 'title', 'timingWindow', 'action', 'physiologicalReason'],
+      },
+    },
+    lungClearingExercises: {
+      type: Type.ARRAY,
+      description:
+        'Exactly 4 targeted indoor lung-clearing exercises: Pursed-Lip Breathing, Diaphragmatic (Belly) Breathing, Huff Coughing / Controlled Airway Clearance, and Bhramari / Nadi Shodhana Pranayama.',
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          id: { type: Type.STRING },
+          name: { type: Type.STRING },
+          categoryGroup: { type: Type.STRING },
+          sessionType: {
+            type: Type.STRING,
+            description: 'Must be exactly one of: Pranayama, Restorative, Dynamic Flow.',
+          },
+          durationMinutes: { type: Type.INTEGER },
+          durationLabel: { type: Type.STRING },
+          howToSteps: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+          },
+          lungOrPerformanceImpact: { type: Type.STRING },
+          tailoredNote: { type: Type.STRING },
+          pacerConfig: {
+            type: Type.OBJECT,
+            properties: {
+              inhaleSec: { type: Type.INTEGER },
+              holdSec: { type: Type.INTEGER },
+              exhaleSec: { type: Type.INTEGER },
+            },
+            required: ['inhaleSec', 'holdSec', 'exhaleSec'],
+          },
+        },
+        required: [
+          'id',
+          'name',
+          'categoryGroup',
+          'sessionType',
+          'durationMinutes',
+          'durationLabel',
+          'howToSteps',
+          'lungOrPerformanceImpact',
+          'tailoredNote',
+          'pacerConfig',
+        ],
+      },
+    },
+  },
+  required: ['burdenSummary', 'cardioWarning', 'immediateInitials', 'lungClearingExercises'],
+};
+
+const smogPlanWithSmokerResponseSchema = {
+  type: Type.OBJECT,
+  properties: {
+    ...smogPlanResponseSchema.properties,
+    smokerRecovery: smokerRecoverySchema,
+  },
+  required: [...smogPlanResponseSchema.required, 'smokerRecovery'],
 };
 
 const PRIMARY_GEMINI_MODEL = 'gemini-3.1-flash-lite';
@@ -718,18 +921,25 @@ async function generateWithModelFallback(
 
 app.post('/api/smog-plan', async (req: Request, res: Response) => {
   const apiKey = process.env.GEMINI_API_KEY;
-  const { aqiData, profile, isRetry } = req.body as {
-    aqiData?: LiveAqiData;
-    profile?: FamilyProfile;
+  const { aqiData: rawAqiData, profile: rawProfile, isRetry } = req.body as {
+    aqiData?: unknown;
+    profile?: unknown;
     isRetry?: boolean;
   };
 
-  if (!aqiData || !profile || !Array.isArray(profile.members) || profile.members.length === 0) {
+  const profile = sanitizeFamilyProfile(rawProfile);
+  if (!isValidLiveAqiPayload(rawAqiData) || !profile) {
     res.status(400).json({
-      error: 'Missing live AQI telemetry or family profile selections.',
+      error: 'Missing or invalid live AQI telemetry or profile selections.',
     });
     return;
   }
+
+  const aqiData: LiveAqiData = {
+    ...rawAqiData,
+    displayName: sanitizeTextInput(rawAqiData.displayName, 120) || 'Your City',
+    query: sanitizeTextInput(rawAqiData.query, 120) || 'Your City',
+  };
 
   if (!apiKey) {
     res.json(buildLocalSmogPlan(aqiData, profile));
@@ -761,29 +971,96 @@ ${languageDirective}`;
     .map((h) => `${h.hourLabel}: AQI ${h.usAqi} (PM2.5 ${h.pm25} µg/m³)`)
     .join(', ');
 
-  const prompt = `Generate a personalized Winter Smog Action Plan JSON for this exact household and live air quality reading:
+  const {
+    cigarettesCount,
+    smokingEquivalentPm25,
+    combinedPm25Burden,
+    hasSmokingExposure,
+  } = calculateCombinedParticulateLoad(aqiData.current.pm25, profile.cigarettesSmokedToday);
+
+  const smokerPromptSection = hasSmokingExposure
+    ? `
+- Cigarettes Smoked Today: ${cigarettesCount} (adds ~${smokingEquivalentPm25} µg/m³ equivalent PM2.5 burden at ~22 µg/m³ per cigarette; Combined Equivalent PM2.5 Load = ${combinedPm25Burden} µg/m³)`
+    : `
+- Cigarettes Smoked Today: 0 (Non-Smoker)`;
+
+  const smokerRequirementSection = hasSmokingExposure
+    ? `
+7. smokerRecovery (Smoker Lung-Recovery Initials & Exercises — REQUIRED because cigarettesSmokedToday = ${cigarettesCount}):
+   - Also factor this smoking exposure (+${smokingEquivalentPm25} µg/m³ PM2.5; combined ${combinedPm25Burden} µg/m³) into headlineAdvisory, healthYoga (soothing airway clearance first), and trainYoga (explicitly warn against intense outdoor cardio and require a 2-hour post-smoking exertion hold).
+   - immediateInitials (First 60 Minutes): Provide EXACTLY 4 actionable immediate steps:
+     1) Warm saline gargle & plain steam inhalation (0–15 min) for mucociliary airway clearance
+     2) Warm water + Vitamin-C / antioxidant hydration (15–30 min) to counter acute oxidative stress
+     3) Avoid outdoor exertion & strenuous cardio for at least 2 hours post-smoking
+     4) Switch immediately to indoor filtered/sealed air tailored to "${profile.homeSetup}"
+   - lungClearingExercises: Provide EXACTLY 4 targeted indoor lung-clearing drills calibrated to ${cigarettesCount} cigarettes today and US AQI ${aqiData.current.usAqi}:
+     1) Pursed-Lip Breathing (trapped-air release & oxygen exchange, sessionType "Pranayama")
+     2) Diaphragmatic (Belly) Breathing (deep lower-lobe ventilation & calm breathing, sessionType "Pranayama")
+     3) Huff Coughing / Controlled Airway Clearance (gentle mucus clearance without harsh coughing, sessionType "Restorative")
+     4) Bhramari / Nadi Shodhana Pranayama (sinus/throat soothing & stress relief indoors; explicitly advise against intense outdoor cardio or forceful Kapalabhati/Bhastrika when combined AQI and cigarette count are high, sessionType "Pranayama").`
+    : '';
+
+  const weatherSnapshot =
+    aqiData.weather ?? buildFallbackWeatherSnapshot(aqiData.current.pm25);
+  const fogHazard = calculateFogHazard({
+    temperatureC: weatherSnapshot.temperatureC,
+    dewPointC: weatherSnapshot.dewPointC,
+    relativeHumidityPct: weatherSnapshot.relativeHumidityPct,
+    windSpeedKmh: weatherSnapshot.windSpeedKmh,
+    pm25: aqiData.current.pm25,
+    commute: profile.commute,
+    reportedVisibilityMeters: weatherSnapshot.reportedVisibilityMeters,
+  });
+
+  const isSoloMode = isIndividualSoloProfile(profile.members);
+  const householdMode = getHouseholdMode(profile.members);
+  const soloModeDirective = isSoloMode
+    ? `
+SOLO / INDIVIDUAL MODE ACTIVE (profileMode: "individual" / "solo"):
+- This user is a single adult ("Individual / Solo") managing their own daily schedule.
+- Focus ALL dailyRoutine actions, indoor ventilation tips, indoorHacks, sustainableSwaps, healthYoga tailoredNotes, and trainYoga conditioning specifically on personal daily routines, solo commuting (${profile.commute}), single-room/studio/workspace air management, and individual outdoor exercise/work schedules.
+- Do NOT include child care, school-drop, or elderly-parent care guidance in dailyRoutine, indoorHacks, healthYoga, or trainYoga.`
+    : '';
+
+  const prompt = `Generate a personalized Winter Smog Action Plan JSON for this exact ${
+    isSoloMode ? 'solo adult' : 'household'
+  } and live air quality reading:
 
 LOCATION & LIVE TELEMETRY (Open-Meteo):
 - City/Locality: ${aqiData.displayName} (Lat ${aqiData.latitude}, Lon ${aqiData.longitude})
 - Current US AQI: ${aqiData.current.usAqi}
 - Current PM2.5: ${aqiData.current.pm25} µg/m³ (WHO 24h limit is 15 µg/m³)
 - Current PM10: ${aqiData.current.pm10} µg/m³
+- Winter Fog & Road Telemetry: Temp ${weatherSnapshot.temperatureC}°C, Dew Point ${fogHazard.dewPointC}°C (Spread ${fogHazard.dewPointSpreadC}°C), RH ${weatherSnapshot.relativeHumidityPct}%, Wind ${weatherSnapshot.windSpeedKmh} km/h, Estimated Visibility ${fogHazard.estimatedVisibilityMeters} m (${fogHazard.fogSeverity}), Recommended Speed Cap ${fogHazard.safeSpeedCapKmh} km/h, Pothole-Braking Risk: ${fogHazard.potholeBrakingRisk}
 - Computed Safest Daytime Window: ${aqiData.safeWindow.windowLabel} (Forecast Avg AQI: ${aqiData.safeWindow.avgAqi}, Avg PM2.5: ${aqiData.safeWindow.avgPm25} µg/m³)
 - 24-Hour Trend (3-hr samples): ${hourlySummary}
 
 HOUSEHOLD & LIFESTYLE PROFILE:
-- Household Members: ${profile.members.join(', ')}
+- Profile Mode: ${householdMode} (${isSoloMode ? 'individual / solo single adult' : 'multi-member family household'})
+- Selected Profile Options: ${profile.members.join(', ')}
 - Primary Daily Commute: ${profile.commute}
 - Home Air Setup: ${profile.homeSetup}
-- Preferred Language for Sharing: ${profile.language}
+- Preferred Language for Sharing: ${profile.language}${smokerPromptSection}${soloModeDirective}
 
-REQUIREMENTS FOR THE 6 SECTIONS:
-1. dailyRoutine: Exactly 4 objects in chronological order: "Morning", "Afternoon", "Evening", "Night". Explicitly reference winter temperature inversion dynamics (early morning & post-sunset inversion trapping smog near ground vs afternoon solar mixing lifting the boundary layer) and align ventilation timing with today's actual Safest Window (${aqiData.safeWindow.windowLabel}). Tailor activities to ${profile.members.join(', ')} and their ${profile.commute} commute.
-2. indoorHacks: Exactly 4 practical, budget-friendly hacks tailored specifically to "${profile.homeSetup}". Include realistic estimatedPm25ReductionPct numbers (e.g. wet-mopping instead of dry jhadu/sweeping, DIY box-fan MERV-13 filter or HEPA placement optimization, damp cloth/weatherstrip door-gap sealing, kitchen exhaust/tadka fume control, or low-maintenance indoor plants as secondary support).
-3. sustainableSwaps: Exactly 3 swaps with categories "Commute", "Cooking", and "Waste" (one for each category). Tailor the Commute swap specifically to "${profile.commute}". Provide realistic numeric weeklyCo2SavedKg and weeklyPm25NoxPreventedGrams, plus a clear lungHealthBenefit explaining how reducing these local emissions protects the airways of ${profile.members.join(', ')}.
+REQUIREMENTS FOR THE ${hasSmokingExposure ? '8' : '7'} SECTIONS:
+1. dailyRoutine: Exactly 4 objects in chronological order: "Morning", "Afternoon", "Evening", "Night". Explicitly reference winter temperature inversion dynamics (early morning & post-sunset inversion trapping smog near ground vs afternoon solar mixing lifting the boundary layer) and align ventilation timing with today's actual Safest Window (${aqiData.safeWindow.windowLabel}). Tailor activities specifically to ${
+    isSoloMode
+      ? `a solo adult's personal daily routine, ${profile.commute} commute, and individual work/exercise schedule`
+      : `${profile.members.join(', ')} and their ${profile.commute} commute`
+  }.
+2. indoorHacks: Exactly 4 practical, budget-friendly hacks tailored specifically to "${profile.homeSetup}"${
+    isSoloMode ? ' in a single-adult apartment, bedroom, or personal workspace' : ''
+  }. Include realistic estimatedPm25ReductionPct numbers (e.g. wet-mopping instead of dry jhadu/sweeping, DIY box-fan MERV-13 filter or HEPA placement optimization, damp cloth/weatherstrip door-gap sealing, kitchen exhaust/tadka fume control, or low-maintenance indoor plants as secondary support).
+3. sustainableSwaps: Exactly 3 swaps with categories "Commute", "Cooking", and "Waste" (one for each category). Tailor the Commute swap specifically to "${profile.commute}". Provide realistic numeric weeklyCo2SavedKg and weeklyPm25NoxPreventedGrams, plus a clear lungHealthBenefit explaining how reducing these local emissions protects the airways of ${
+    isSoloMode ? 'an individual solo commuter' : profile.members.join(', ')
+  }.
 4. communityAlert: A ready-to-copy 4-line WhatsApp/Society RWA notice ("lines" array must have exactly 4 concise lines) mentioning ${aqiData.displayName}, today's US AQI (${aqiData.current.usAqi}) and PM2.5 (${aqiData.current.pm25} µg/m³), advising vulnerable residents indoors, and strongly discouraging open leaf/garbage/bonfire burning in the society.
 5. healthYoga (Indoor Lung-Care Yoga & Pranayama — Respiratory Recovery & Lung Detox):
-   - Tailor guidance for ${profile.members.join(', ')} at US AQI ${aqiData.current.usAqi} (PM2.5 ${aqiData.current.pm25} µg/m³) with home setup "${profile.homeSetup}".
+   - Tailor guidance for ${
+     isSoloMode
+       ? 'an individual solo adult managing personal work and commute exposure'
+       : profile.members.join(', ')
+   } at US AQI ${aqiData.current.usAqi} (PM2.5 ${aqiData.current.pm25} µg/m³) with home setup "${profile.homeSetup}".
    - Provide EXACTLY 6 sessions:
      * Under categoryGroup "Pranayama (Breathwork)" (sessionType "Pranayama"):
        1) Nadi Shodhana (Alternate Nostril Breathing) — airway balance & stress reduction
@@ -793,7 +1070,7 @@ REQUIREMENTS FOR THE 6 SECTIONS:
        4) Bhujangasana (Cobra Pose) — expands chest capacity & eases shallow breathing
        5) Matsyasana (Fish Pose) — supported ribcage expansion
        6) Setu Bandhasana (Bridge Pose) — opens chest & relieves respiratory tension
-   - If AQI > 200 or Asthma/Elderly are in the household, keep breath holds gentle (0–2s) and explicitly warn against forceful rapid breathing (Kapalabhati or Bhastrika) in unfiltered air.
+   - If AQI > 200 or Asthma/Elderly are in the household${hasSmokingExposure ? ' or smoking exposure is logged' : ''}, keep breath holds gentle (0–2s) and explicitly warn against forceful rapid breathing (Kapalabhati or Bhastrika) in unfiltered air.
 6. trainYoga (High-AQI Indoor Athletic Yoga & Breath Conditioning — Indoor Smog-Day Conditioning):
    - Designed for outdoor runners and athletes forced indoors during smog spikes at US AQI ${aqiData.current.usAqi} with "${profile.homeSetup}".
    - Provide EXACTLY 5 sessions:
@@ -805,14 +1082,21 @@ REQUIREMENTS FOR THE 6 SECTIONS:
      * Under categoryGroup "Post-Workout Chest & Thoracic Mobility" (sessionType "Restorative"):
        4) Ustrasana (Camel Pose) — counters tight posture & opens chest wall
        5) Dhanurasana (Bow Pose) — thoracic mobility to maximize oxygen uptake
-   - Provide realistic pacerConfig values (inhaleSec 3–5, holdSec 0–4, exhaleSec 4–8) suitable for each practice.`;
+   - Provide realistic pacerConfig values (inhaleSec 3–5, holdSec 0–4, exhaleSec 4–8) suitable for each practice.
+7. roadSafetyAdvice (Winter Fog & Pothole Commute Shield):
+   - Use visibilityMeters=${fogHazard.estimatedVisibilityMeters}, fogSeverity="${fogHazard.fogSeverity}", safeSpeedCapKmh=${fogHazard.safeSpeedCapKmh}, potholeBrakingRisk="${fogHazard.potholeBrakingRisk}".
+   - Provide a concise commuteDirective and 3 practical hazardChecklist items specifically for "${profile.commute}" addressing low-beam fog lighting, pothole braking margin (~${fogHazard.stoppingDistanceMeters} m), and pre-9 AM winter smog-fog traps.${smokerRequirementSection}`;
 
   try {
+    const activeSchema = hasSmokingExposure
+      ? smogPlanWithSmokerResponseSchema
+      : smogPlanResponseSchema;
+
     const { response } = await generateWithModelFallback(
       ai,
       prompt,
       systemInstruction,
-      smogPlanResponseSchema
+      activeSchema
     );
     const rawText = (response.text ?? '').trim();
     if (!rawText) {
@@ -822,6 +1106,36 @@ REQUIREMENTS FOR THE 6 SECTIONS:
     const parsed = JSON.parse(rawText) as Omit<SmogActionPlan, 'generatedAt'>;
     const plan: SmogActionPlan = {
       ...parsed,
+      roadSafetyAdvice: parsed.roadSafetyAdvice
+        ? {
+            ...parsed.roadSafetyAdvice,
+            visibilityMeters: fogHazard.estimatedVisibilityMeters,
+            fogSeverity: fogHazard.fogSeverity,
+            safeSpeedCapKmh: fogHazard.safeSpeedCapKmh,
+            potholeBrakingRisk: fogHazard.potholeBrakingRisk,
+          }
+        : {
+            visibilityMeters: fogHazard.estimatedVisibilityMeters,
+            fogSeverity: fogHazard.fogSeverity,
+            safeSpeedCapKmh: fogHazard.safeSpeedCapKmh,
+            potholeBrakingRisk: fogHazard.potholeBrakingRisk,
+            commuteDirective: fogHazard.summary,
+            hazardChecklist: fogHazard.commuterTips,
+          },
+      smokerRecovery:
+        hasSmokingExposure && parsed.smokerRecovery
+          ? {
+              ...parsed.smokerRecovery,
+              cigarettesCount,
+              smokingEquivalentPm25,
+              combinedPm25Burden,
+            }
+          : hasSmokingExposure
+            ? buildLocalSmogPlan(aqiData, {
+                ...profile,
+                cigarettesSmokedToday: cigarettesCount,
+              }).smokerRecovery
+            : null,
       generatedAt: new Date().toISOString(),
     };
 
@@ -952,7 +1266,11 @@ CONTENT TO COVER NATURALLY AFTER THE OPENING:
 2. Safe outdoor window: ${aqiData.safeWindow.windowLabel} (${aqiData.safeWindow.advisory}).
 3. Top indoor air hack: ${topHack ? `${topHack.title} (reduces indoor PM2.5 by roughly ${topHack.estimatedPm25ReductionPct}%) — ${topHack.howToExecute}` : 'Keep windows sealed and wet-mop floors.'}
 4. Priority household directive: ${plan.headlineAdvisory}
-5. Brief mention of either ${topRoutine ? `morning guidance (${topRoutine.ventilationAction})` : 'ventilation timing'} or ${topYoga ? `gentle indoor ${topYoga.name}` : 'indoor lung care'}.
+5. Brief mention of either ${topRoutine ? `morning guidance (${topRoutine.ventilationAction})` : 'ventilation timing'} or ${topYoga ? `gentle indoor ${topYoga.name}` : 'indoor lung care'}.${
+      plan.smokerRecovery && plan.smokerRecovery.cigarettesCount > 0
+        ? `\n6. Immediate smoker lung-recovery step: ${plan.smokerRecovery.cigarettesCount} cigarettes logged today — start with ${plan.smokerRecovery.immediateInitials?.[0]?.title || 'warm steam inhalation and warm water hydration'} and avoid outdoor cardio for 2 hours.`
+        : ''
+    }
 
 STYLE RULES:
 - Plain conversational sentences only.
@@ -1014,11 +1332,429 @@ STYLE RULES:
   }
 });
 
-async function startServer() {
-  const isProduction =
-    process.env.NODE_ENV === 'production' || Boolean(process.env.K_SERVICE);
+const voiceChatResponseSchema = {
+  type: Type.OBJECT,
+  properties: {
+    reply: {
+      type: Type.STRING,
+      description:
+        'A concise, warm spoken response (2 to 4 short natural sentences, zero markdown, zero emojis, spell out units like micrograms per cubic meter).',
+    },
+  },
+  required: ['reply'],
+};
 
-  if (!isProduction) {
+app.post('/api/voice-chat', async (req: Request, res: Response) => {
+  const apiKey = process.env.GEMINI_API_KEY;
+  const { message, history, aqiData, profile, planHeadline } = req.body as {
+    message?: unknown;
+    history?: unknown;
+    aqiData?: unknown;
+    profile?: unknown;
+    planHeadline?: unknown;
+  };
+
+  const trimmed = sanitizeHazardReportText(message, 500);
+  if (!trimmed) {
+    res.status(400).json({ error: 'Please provide a spoken or typed question.' });
+    return;
+  }
+
+  const validAqiData = isValidLiveAqiPayload(aqiData) ? aqiData : null;
+  const fallbackProfile: FamilyProfile = sanitizeFamilyProfile(profile) ?? {
+    members: ['Individual / Solo'],
+    commute: 'Two-Wheeler (Bike/Scooter)',
+    homeSetup: 'No Air Purifier (Budget/Natural hacks needed)',
+    language: 'English',
+    cigarettesSmokedToday: 0,
+  };
+  const safePlanHeadline = sanitizeTextInput(planHeadline, 300) || null;
+  const safeHistory = sanitizeVoiceChatHistory(history, 6, 400);
+
+  if (!apiKey) {
+    res.json({ reply: buildLocalVoiceChatReply(trimmed, validAqiData, fallbackProfile) });
+    return;
+  }
+
+  const ai = new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
+    },
+  });
+
+  const systemInstruction = buildLiveVoiceSystemInstruction({
+    aqiData: validAqiData,
+    profile: fallbackProfile,
+    planHeadline: safePlanHeadline,
+  });
+
+  const recentHistory = safeHistory
+    .map((turn) => `${turn.role === 'user' ? 'User' : 'VayuMitra'}: ${turn.text}`)
+    .join('\n');
+
+  const prompt = `${recentHistory ? `RECENT CONVERSATION:\n${recentHistory}\n\n` : ''}USER QUESTION: ${trimmed}\n\nRespond warmly and concisely in 2 to 4 plain spoken sentences with zero markdown.`;
+
+  try {
+    const { response } = await generateWithModelFallback(
+      ai,
+      prompt,
+      systemInstruction,
+      voiceChatResponseSchema
+    );
+    const rawText = (response.text ?? '').trim();
+    const parsed = JSON.parse(rawText) as { reply?: string };
+    const cleanReply = (parsed.reply ?? '').replace(/[*#`_]/g, '').replace(/\s+/g, ' ').trim();
+
+    res.json({
+      reply: cleanReply || buildLocalVoiceChatReply(trimmed, validAqiData, fallbackProfile),
+    });
+  } catch (err) {
+    console.error('Gemini voice-chat fallback error:', err);
+    res.json({
+      reply: buildLocalVoiceChatReply(trimmed, validAqiData, fallbackProfile),
+    });
+  }
+});
+
+const LIVE_VOICE_MODEL = 'gemini-3.8-live';
+const ALLOWED_LIVE_VOICES = ['Zephyr', 'Kore', 'Puck', 'Charon', 'Fenrir'] as const;
+type LiveVoiceName = (typeof ALLOWED_LIVE_VOICES)[number];
+
+interface LiveVoiceContextPayload {
+  voiceName?: string;
+  aqiData?: LiveAqiData | null;
+  profile?: FamilyProfile | null;
+  planHeadline?: string | null;
+}
+
+function extractLiveErrorReason(err: unknown): string {
+  if (err instanceof Error && err.message) return err.message;
+  if (typeof err === 'object' && err !== null) {
+    const record = err as {
+      message?: unknown;
+      reason?: unknown;
+      code?: unknown;
+      error?: { message?: unknown };
+    };
+    if (typeof record.message === 'string' && record.message.trim()) return record.message;
+    if (typeof record.error?.message === 'string' && record.error.message.trim()) {
+      return record.error.message;
+    }
+    if (typeof record.reason === 'string' && record.reason.trim()) return record.reason;
+    if (typeof record.code === 'number') return `WebSocket closed (code ${record.code})`;
+  }
+  return 'Live audio stream unavailable in this network environment.';
+}
+
+function buildLiveVoiceSystemInstruction(ctx: LiveVoiceContextPayload): string {
+  const parts: string[] = [
+    'You are VayuMitra AI, a calm, knowledgeable, and compassionate urban air quality and winter smog advisor having a real-time spoken voice conversation.',
+    'Keep spoken replies natural, concise (2 to 4 short sentences unless asked for detail), and easy to follow aloud. Never output markdown, asterisks, bullet symbols, or raw units like "µg/m³" (say "micrograms per cubic meter").',
+    'Base your advice strictly on the user live telemetry and household profile provided below. Remind users to consult a physician for acute respiratory distress.',
+  ];
+
+  if (ctx.aqiData) {
+    const aqi = ctx.aqiData;
+    const weather = aqi.weather ?? buildFallbackWeatherSnapshot(aqi.current.pm25);
+    const fog = calculateFogHazard({
+      temperatureC: weather.temperatureC,
+      dewPointC: weather.dewPointC,
+      relativeHumidityPct: weather.relativeHumidityPct,
+      windSpeedKmh: weather.windSpeedKmh,
+      pm25: aqi.current.pm25,
+      commute: ctx.profile?.commute,
+      reportedVisibilityMeters: weather.reportedVisibilityMeters,
+    });
+    parts.push(
+      `LIVE TELEMETRY FOR ${aqi.displayName}: US AQI ${aqi.current.usAqi}, PM2.5 ${aqi.current.pm25} micrograms per cubic meter, PM10 ${aqi.current.pm10} micrograms per cubic meter. Computed safest outdoor window today: ${aqi.safeWindow.windowLabel} (average AQI ${aqi.safeWindow.avgAqi}, ${aqi.safeWindow.advisory}). Road fog shield: ${fog.fogSeverity}, roughly ${fog.estimatedVisibilityMeters} meters visibility, safe speed cap ${fog.safeSpeedCapKmh} kilometers per hour, pothole-braking risk ${fog.potholeBrakingRisk}.`
+    );
+  }
+
+  if (ctx.profile) {
+    const p = ctx.profile;
+    const isSolo = isIndividualSoloProfile(p.members);
+    const exposure = calculateCombinedParticulateLoad(
+      ctx.aqiData?.current.pm25 ?? 0,
+      p.cigarettesSmokedToday
+    );
+    parts.push(
+      `USER PROFILE (${getHouseholdMode(p.members)} mode): Selected options: ${p.members.join(', ')}. Primary commute: ${p.commute}. Home air setup: ${p.homeSetup}. Preferred language: ${p.language}.${
+        isSolo
+          ? ' Focus advice on personal solo routines, individual commute, and solo exercise/work schedules rather than child or elderly care.'
+          : ''
+      }`
+    );
+    if (exposure.hasSmokingExposure) {
+      parts.push(
+        `SMOKING EXPOSURE TODAY: ${exposure.cigarettesCount} cigarettes logged (adds roughly ${exposure.smokingEquivalentPm25} micrograms per cubic meter equivalent PM2.5, for a combined load of ${exposure.combinedPm25Burden} micrograms per cubic meter). Advise immediate warm steam/saline clearance, hydration, avoiding outdoor cardio for 2 hours, and gentle indoor breathing drills.`
+      );
+    }
+  }
+
+  if (ctx.planHeadline) {
+    parts.push(`CURRENT PRIORITY ACTION PLAN DIRECTIVE: ${ctx.planHeadline}`);
+  }
+
+  return parts.join(' ');
+}
+
+function attachLiveVoiceWebSocket(httpServer: http.Server) {
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 });
+
+  httpServer.on('upgrade', (request: IncomingMessage, socket, head) => {
+    const pathname = new URL(request.url ?? '/', 'http://localhost').pathname;
+    if (pathname !== '/api/live-voice') {
+      return;
+    }
+
+    wss.handleUpgrade(request, socket, head, (clientWs) => {
+      wss.emit('connection', clientWs, request);
+    });
+  });
+
+  wss.on('connection', (clientWs: WebSocket) => {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      if (clientWs.readyState === clientWs.OPEN) {
+        clientWs.send(
+          JSON.stringify({
+            type: 'live_unavailable',
+            reason: 'Gemini Live API key is not configured; using Browser Voice Mode.',
+          })
+        );
+      }
+      clientWs.close();
+      return;
+    }
+
+    // Gemini Live BidiGenerateContent requires apiVersion 'v1beta' on @google/genai 3.x
+    const liveAi = new GoogleGenAI({
+      apiKey,
+      apiVersion: 'v1beta',
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
+      },
+    });
+
+    type LiveSession = Awaited<ReturnType<typeof liveAi.live.connect>>;
+    let sessionPromise: Promise<LiveSession> | null = null;
+    let activeSession: LiveSession | null = null;
+    let readySent = false;
+    let closed = false;
+
+    const safeSend = (payload: Record<string, unknown>) => {
+      if (!closed && clientWs.readyState === clientWs.OPEN) {
+        clientWs.send(JSON.stringify(payload));
+      }
+    };
+
+    const connectSession = (context: LiveVoiceContextPayload) => {
+      if (sessionPromise) return sessionPromise;
+
+      const requestedVoice = context.voiceName as LiveVoiceName | undefined;
+      const voiceName: LiveVoiceName =
+        requestedVoice && ALLOWED_LIVE_VOICES.includes(requestedVoice)
+          ? requestedVoice
+          : 'Zephyr';
+
+      sessionPromise = liveAi.live
+        .connect({
+          model: LIVE_VOICE_MODEL,
+          config: {
+            responseModalities: [Modality.AUDIO],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: { voiceName },
+              },
+            },
+            inputAudioTranscription: {},
+            outputAudioTranscription: {},
+            systemInstruction: buildLiveVoiceSystemInstruction(context),
+          },
+          callbacks: {
+            onopen: () => {
+              // Wait briefly for setupComplete; if server accepts cleanly we mark ready on setupComplete
+            },
+            onmessage: (message: LiveServerMessage) => {
+              if (!readySent) {
+                readySent = true;
+                safeSend({ type: 'ready', model: LIVE_VOICE_MODEL, voiceName });
+              }
+              const content = message.serverContent;
+              if (content?.inputTranscription?.text) {
+                safeSend({
+                  type: 'inputTranscript',
+                  text: content.inputTranscription.text,
+                });
+              }
+              if (content?.outputTranscription?.text) {
+                safeSend({
+                  type: 'outputTranscript',
+                  text: content.outputTranscription.text,
+                });
+              }
+              for (const part of content?.modelTurn?.parts ?? []) {
+                if (part.inlineData?.data) {
+                  safeSend({
+                    type: 'audio',
+                    data: part.inlineData.data,
+                  });
+                }
+              }
+              if (content?.interrupted) {
+                safeSend({ type: 'interrupted' });
+              }
+              if (content?.turnComplete) {
+                safeSend({ type: 'turnComplete' });
+              }
+            },
+            onerror: (err: unknown) => {
+              const reason = extractLiveErrorReason(err);
+              console.warn('Gemini Live API handshake/stream error, signaling browser fallback:', reason);
+              safeSend({ type: 'live_unavailable', reason });
+            },
+            onclose: (event: unknown) => {
+              if (closed) return;
+              const reason = extractLiveErrorReason(event);
+              if (!readySent) {
+                safeSend({ type: 'live_unavailable', reason });
+              } else {
+                safeSend({ type: 'closed', reason });
+              }
+            },
+          },
+        })
+        .then((session) => {
+          activeSession = session;
+          if (closed) {
+            try {
+              session.close();
+            } catch {
+              // Ignore teardown error
+            }
+          }
+          return session;
+        })
+        .catch((err) => {
+          const reason = extractLiveErrorReason(err);
+          console.warn('Gemini Live API connect rejected, signaling browser fallback:', reason);
+          safeSend({ type: 'live_unavailable', reason });
+          throw err;
+        });
+
+      return sessionPromise;
+    };
+
+    clientWs.on('message', (raw) => {
+      if (closed) return;
+
+      let msg: {
+        type?: string;
+        data?: string;
+        text?: string;
+        voiceName?: string;
+        aqiData?: LiveAqiData | null;
+        profile?: FamilyProfile | null;
+        planHeadline?: string | null;
+      };
+
+      try {
+        msg = JSON.parse(raw.toString());
+      } catch {
+        return;
+      }
+
+      if (msg.type === 'setup') {
+        void connectSession({
+          voiceName: msg.voiceName,
+          aqiData: msg.aqiData,
+          profile: msg.profile,
+          planHeadline: msg.planHeadline,
+        }).catch(() => {});
+        return;
+      }
+
+      if (msg.type === 'stop') {
+        closed = true;
+        if (activeSession) {
+          try {
+            activeSession.close();
+          } catch {
+            // Ignore teardown error
+          }
+          activeSession = null;
+        }
+        clientWs.close();
+        return;
+      }
+
+      if (!sessionPromise) {
+        void connectSession({}).catch(() => {});
+      }
+
+      if (msg.type === 'audio' && typeof msg.data === 'string' && msg.data.length > 0) {
+        const audioData = msg.data;
+        sessionPromise
+          ?.then((session) => {
+            if (!closed) {
+              session.sendRealtimeInput({
+                audio: { data: audioData, mimeType: 'audio/pcm;rate=16000' },
+              });
+            }
+          })
+          .catch(() => {});
+      } else if (msg.type === 'text' && typeof msg.text === 'string' && msg.text.trim()) {
+        const textPrompt = msg.text.trim();
+        sessionPromise
+          ?.then((session) => {
+            if (!closed) {
+              session.sendRealtimeInput({ text: textPrompt });
+            }
+          })
+          .catch(() => {});
+      }
+    });
+
+    clientWs.on('close', () => {
+      closed = true;
+      if (activeSession) {
+        try {
+          activeSession.close();
+        } catch {
+          // Ignore teardown error
+        }
+        activeSession = null;
+      } else if (sessionPromise) {
+        sessionPromise
+          .then((session) => {
+            try {
+              session.close();
+            } catch {
+              // Ignore teardown error
+            }
+          })
+          .catch(() => {});
+      }
+    });
+  });
+}
+
+async function startServer() {
+  const distPath = path.resolve(__dirname, 'dist');
+  const distIndexPath = path.join(distPath, 'index.html');
+  const hasBuiltDist = fs.existsSync(distIndexPath);
+  const isDevCommand = process.env.npm_lifecycle_event === 'dev';
+  const useProductionStatic =
+    !isDevCommand &&
+    hasBuiltDist &&
+    (process.env.NODE_ENV === 'production' || Boolean(process.env.K_SERVICE));
+
+  if (!useProductionStatic) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -1026,14 +1762,16 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.resolve(__dirname, 'dist');
     app.use(express.static(distPath));
     app.get('*', (_req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+      res.sendFile(distIndexPath);
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const httpServer = http.createServer(app);
+  attachLiveVoiceWebSocket(httpServer);
+
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`VayuMitra AI server listening on http://0.0.0.0:${PORT}`);
   });
 }

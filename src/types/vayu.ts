@@ -1,4 +1,5 @@
 export type HouseholdMemberOption =
+  | 'Individual / Solo'
   | 'Healthy Adults'
   | 'Children'
   | 'Elderly Parents'
@@ -24,6 +25,7 @@ export interface FamilyProfile {
   commute: CommuteOption;
   homeSetup: HomeAirSetupOption;
   language: LanguageOption;
+  cigarettesSmokedToday: number;
 }
 
 export interface LocationSelection {
@@ -57,6 +59,15 @@ export interface SafeOutdoorWindow {
   endIndex: number;
 }
 
+/** Live meteorological readings from Open-Meteo used for winter fog & braking risk modeling. */
+export interface LiveWeatherSnapshot {
+  temperatureC: number;
+  dewPointC: number;
+  relativeHumidityPct: number;
+  windSpeedKmh: number;
+  reportedVisibilityMeters: number | null;
+}
+
 export interface LiveAqiData {
   query: string;
   displayName: string;
@@ -74,6 +85,7 @@ export interface LiveAqiData {
     ozone: number | null;
     co: number | null;
   };
+  weather?: LiveWeatherSnapshot | null;
   safeWindow: SafeOutdoorWindow;
   hourly: HourlyAqiPoint[];
 }
@@ -151,6 +163,34 @@ export interface TrainYogaModule {
   sessions: YogaSession[];
 }
 
+export interface SmokerInitialStep {
+  id: string;
+  title: string;
+  timingWindow: string;
+  action: string;
+  physiologicalReason: string;
+}
+
+export interface SmokerRecoveryModule {
+  cigarettesCount: number;
+  smokingEquivalentPm25: number;
+  combinedPm25Burden: number;
+  burdenSummary: string;
+  cardioWarning: string;
+  immediateInitials: SmokerInitialStep[];
+  lungClearingExercises: YogaSession[];
+}
+
+/** Tailored winter fog visibility, safe speed cap, and pothole-braking guidance. */
+export interface RoadSafetyAdvice {
+  visibilityMeters: number;
+  fogSeverity: string;
+  safeSpeedCapKmh: number;
+  potholeBrakingRisk: string;
+  commuteDirective: string;
+  hazardChecklist: string[];
+}
+
 export interface SmogActionPlan {
   generatedAt: string;
   citySummary: string;
@@ -161,4 +201,6 @@ export interface SmogActionPlan {
   communityAlert: CommunityAlert;
   healthYoga: HealthYogaModule;
   trainYoga: TrainYogaModule;
+  smokerRecovery?: SmokerRecoveryModule | null;
+  roadSafetyAdvice?: RoadSafetyAdvice | null;
 }

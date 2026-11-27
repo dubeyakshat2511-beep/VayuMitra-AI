@@ -1,3 +1,4 @@
+/** Visual and clinical metadata associated with a US EPA AQI severity tier. */
 export interface AqiCategoryMeta {
   label: string;
   shortLabel: string;
@@ -11,16 +12,20 @@ export interface AqiCategoryMeta {
   healthNote: string;
 }
 
+/**
+ * Classifies a numeric US EPA AQI value into its corresponding severity tier,
+ * accessible light/dark Tailwind styling classes, and plain-language health note.
+ */
 export function getAqiCategory(aqi: number): AqiCategoryMeta {
   if (aqi <= 50) {
     return {
       label: 'Good',
       shortLabel: 'Good',
       level: 'good',
-      textClass: 'text-emerald-700',
+      textClass: 'text-emerald-700 dark:text-emerald-300',
       darkTextClass: 'text-emerald-400',
-      surfaceClass: 'bg-emerald-50',
-      borderClass: 'border-emerald-200',
+      surfaceClass: 'bg-emerald-50 dark:bg-emerald-950/60',
+      borderClass: 'border-emerald-200 dark:border-emerald-800/80',
       barColor: 'bg-emerald-500',
       strokeHex: '#10b981',
       healthNote: 'Air quality is satisfactory with minimal pollution risk.',
@@ -31,10 +36,10 @@ export function getAqiCategory(aqi: number): AqiCategoryMeta {
       label: 'Moderate',
       shortLabel: 'Moderate',
       level: 'moderate',
-      textClass: 'text-amber-700',
+      textClass: 'text-amber-700 dark:text-amber-300',
       darkTextClass: 'text-amber-300',
-      surfaceClass: 'bg-amber-50',
-      borderClass: 'border-amber-200',
+      surfaceClass: 'bg-amber-50 dark:bg-amber-950/60',
+      borderClass: 'border-amber-200 dark:border-amber-800/80',
       barColor: 'bg-amber-500',
       strokeHex: '#f59e0b',
       healthNote: 'Acceptable air quality; unusually sensitive individuals should limit prolonged exertion.',
@@ -45,10 +50,10 @@ export function getAqiCategory(aqi: number): AqiCategoryMeta {
       label: 'Unhealthy for Sensitive Groups',
       shortLabel: 'Sensitive Alert',
       level: 'sensitive',
-      textClass: 'text-orange-700',
+      textClass: 'text-orange-700 dark:text-orange-300',
       darkTextClass: 'text-orange-400',
-      surfaceClass: 'bg-orange-50',
-      borderClass: 'border-orange-200',
+      surfaceClass: 'bg-orange-50 dark:bg-orange-950/60',
+      borderClass: 'border-orange-200 dark:border-orange-800/80',
       barColor: 'bg-orange-500',
       strokeHex: '#f97316',
       healthNote: 'Children, elderly, and asthma patients should limit outdoor exposure.',
@@ -59,10 +64,10 @@ export function getAqiCategory(aqi: number): AqiCategoryMeta {
       label: 'Unhealthy',
       shortLabel: 'Unhealthy',
       level: 'unhealthy',
-      textClass: 'text-red-700',
+      textClass: 'text-red-700 dark:text-red-300',
       darkTextClass: 'text-red-400',
-      surfaceClass: 'bg-red-50',
-      borderClass: 'border-red-200',
+      surfaceClass: 'bg-red-50 dark:bg-red-950/60',
+      borderClass: 'border-red-200 dark:border-red-800/80',
       barColor: 'bg-red-600',
       strokeHex: '#ef4444',
       healthNote: 'Everyone may experience airway irritation; wear N95 outdoors and keep windows closed.',
@@ -73,10 +78,10 @@ export function getAqiCategory(aqi: number): AqiCategoryMeta {
       label: 'Very Unhealthy',
       shortLabel: 'Very Unhealthy',
       level: 'very-unhealthy',
-      textClass: 'text-rose-800',
+      textClass: 'text-rose-800 dark:text-rose-300',
       darkTextClass: 'text-rose-400',
-      surfaceClass: 'bg-rose-50',
-      borderClass: 'border-rose-200',
+      surfaceClass: 'bg-rose-50 dark:bg-rose-950/60',
+      borderClass: 'border-rose-200 dark:border-rose-800/80',
       barColor: 'bg-rose-700',
       strokeHex: '#e11d48',
       healthNote: 'Severe smog risk across all age groups. Avoid outdoor exercise and seal indoor drafts.',
@@ -86,16 +91,19 @@ export function getAqiCategory(aqi: number): AqiCategoryMeta {
     label: 'Hazardous',
     shortLabel: 'Hazardous',
     level: 'hazardous',
-    textClass: 'text-red-900',
+    textClass: 'text-red-900 dark:text-red-200',
     darkTextClass: 'text-red-300',
-    surfaceClass: 'bg-red-100',
-    borderClass: 'border-red-300',
+    surfaceClass: 'bg-red-100 dark:bg-red-950/80',
+    borderClass: 'border-red-300 dark:border-red-800',
     barColor: 'bg-red-900',
     strokeHex: '#991b1b',
     healthNote: 'Health emergency conditions. Remain indoors with active filtration or DIY air cleaning.',
   };
 }
 
+/**
+ * Formats a PM2.5 reading (µg/m³) relative to the WHO 2021 24-hour guideline (15 µg/m³).
+ */
 export function getWhoPm25Multiple(pm25: number): string {
   // WHO 2021 24-hour guideline for PM2.5 is 15 µg/m³
   const ratio = pm25 / 15;
@@ -103,6 +111,9 @@ export function getWhoPm25Multiple(pm25: number): string {
   return `${ratio.toFixed(1)}× WHO 24h limit (15 µg/m³)`;
 }
 
+/**
+ * Formats an ISO-8601 local observation timestamp into a concise 12-hour display label.
+ */
 export function formatObservedTime(isoTime: string): string {
   if (!isoTime) return 'Live reading';
   const parts = isoTime.split('T');

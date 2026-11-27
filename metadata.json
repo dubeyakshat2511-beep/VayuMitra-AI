@@ -1,6 +1,6 @@
 {
   "name": "VayuMitra AI — Urban Air Quality & Smog Assistant",
   "description": "Real-time urban air quality telemetry and personalized winter smog action plans for families and residential communities.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": ["microphone"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

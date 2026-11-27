@@ -29,7 +29,7 @@ export function SustainableSwapsTab({
       {/* Live Weekly Impact Meter */}
       <section
         aria-label="Weekly Impact Meter"
-        className="rounded-xl bg-slate-900 text-slate-100 p-5 sm:p-6 space-y-5"
+        className="rounded-xl bg-slate-900 dark:bg-slate-950 border border-transparent dark:border-slate-800 text-slate-100 p-5 sm:p-6 space-y-5"
       >
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <div>
@@ -114,7 +114,7 @@ export function SustainableSwapsTab({
       </section>
 
       {/* 3 Interactive Swap Rows */}
-      <div className="divide-y divide-slate-200">
+      <div className="divide-y divide-slate-200 dark:divide-slate-800">
         {swaps.map((swap) => {
           const isChecked = Boolean(checkedIds[swap.id]);
           const checkboxId = `swap-${swap.id}`;
@@ -140,10 +140,10 @@ export function SustainableSwapsTab({
                   />
                   <span
                     aria-hidden="true"
-                    className={`w-5 h-5 rounded-md border flex items-center justify-center transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-emerald-500 peer-focus-visible:ring-offset-2 ${
+                    className={`w-5 h-5 rounded-md border flex items-center justify-center transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-emerald-500 peer-focus-visible:ring-offset-2 dark:peer-focus-visible:ring-offset-slate-900 ${
                       isChecked
                         ? 'bg-emerald-600 border-emerald-600 text-white'
-                        : 'bg-white border-slate-300 group-hover:border-emerald-500'
+                        : 'bg-white dark:bg-slate-950 border-slate-300 dark:border-slate-600 group-hover:border-emerald-500'
                     }`}
                   >
                     {isChecked && <Check className="w-3.5 h-3.5 stroke-[3]" />}
@@ -153,42 +153,42 @@ export function SustainableSwapsTab({
                 <div className="flex-1 min-w-0 space-y-2.5">
                   <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
                     <div>
-                      <span className="text-xs font-semibold text-emerald-700">
+                      <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">
                         {swap.category} Swap
                       </span>
-                      <h4 className="text-base font-bold text-slate-900 leading-snug">
+                      <h4 className="text-base font-bold text-slate-900 dark:text-slate-100 leading-snug">
                         {swap.title}
                       </h4>
                     </div>
 
-                    <div className="flex items-center gap-2 text-xs font-mono tabular-nums text-slate-600">
-                      <span className="font-semibold text-emerald-700">
+                    <div className="flex items-center gap-2 text-xs font-mono tabular-nums text-slate-600 dark:text-slate-300">
+                      <span className="font-semibold text-emerald-700 dark:text-emerald-400">
                         -{swap.weeklyCo2SavedKg.toFixed(1)} kg CO₂/wk
                       </span>
-                      <span aria-hidden="true" className="text-slate-300">·</span>
-                      <span className="font-semibold text-amber-700">
+                      <span aria-hidden="true" className="text-slate-300 dark:text-slate-600">·</span>
+                      <span className="font-semibold text-amber-700 dark:text-amber-300">
                         -{swap.weeklyPm25NoxPreventedGrams.toFixed(1)} g PM2.5/NOx
                       </span>
                     </div>
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-                    <p className="text-slate-600">
-                      <span className="font-semibold text-slate-800">Instead of: </span>
+                    <p className="text-slate-600 dark:text-slate-300">
+                      <span className="font-semibold text-slate-800 dark:text-slate-100">Instead of: </span>
                       {swap.currentHabit}
                     </p>
-                    <p className="text-slate-800">
-                      <span className="font-semibold text-emerald-800">Switch to: </span>
+                    <p className="text-slate-800 dark:text-slate-200">
+                      <span className="font-semibold text-emerald-800 dark:text-emerald-400">Switch to: </span>
                       {swap.sustainableAction}
                     </p>
                   </div>
 
-                  <div className="flex items-start gap-2 text-xs text-slate-600 bg-slate-50 rounded-lg p-3 leading-relaxed">
-                    <Leaf className="w-3.5 h-3.5 text-emerald-600 mt-0.5 shrink-0" aria-hidden="true" />
+                  <div className="flex items-start gap-2 text-xs text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-slate-800/70 rounded-lg p-3 leading-relaxed">
+                    <Leaf className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 mt-0.5 shrink-0" aria-hidden="true" />
                     <p>
-                      <span className="font-semibold text-slate-800">Lung benefit: </span>
+                      <span className="font-semibold text-slate-800 dark:text-slate-100">Lung benefit: </span>
                       {swap.lungHealthBenefit}{' '}
-                      <span className="text-slate-500">Tip: {swap.practicalTip}</span>
+                      <span className="text-slate-500 dark:text-slate-400">Tip: {swap.practicalTip}</span>
                     </p>
                   </div>
                 </div>

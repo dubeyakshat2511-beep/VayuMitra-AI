@@ -1,18 +1,11 @@
 import { FormEvent, useState } from 'react';
-import {
-  AlertTriangle,
-  Clock,
-  MapPin,
-  RefreshCw,
-  ShieldAlert,
-  ShieldCheck,
-  Wind,
-} from 'lucide-react';
+import { MapPin, RefreshCw, ShieldAlert } from 'lucide-react';
 import type { LiveAqiData, LocationSelection } from '../types/vayu';
-import { formatObservedTime, getAqiCategory, getWhoPm25Multiple } from '../utils/aqi';
-import { DispersionChart } from './DispersionChart';
+import { formatObservedTime } from '../utils/aqi';
+import { sanitizeCityQuery } from '../utils/requestValidation';
 import { LocationSearchInput } from './LocationSearchInput';
 import { LocationMiniMap } from './LocationMiniMap';
+import { AirQualityMetricsCard } from './AirQualityMetricsCard';
 
 const QUICK_CITIES = [
   { label: 'Kanpur', query: 'Kanpur, Uttar Pradesh' },
@@ -22,15 +15,27 @@ const QUICK_CITIES = [
   { label: 'Patna', query: 'Patna, Bihar' },
 ];
 
-interface LiveTelemetryBarProps {
+/** Props accepted by {@link LiveTelemetryBar}. */
+export interface LiveTelemetryBarProps {
+  /** Controlled text value for the city/locality search input. */
   cityInput: string;
+  /** Updates the city search input value. */
   onCityInputChange: (val: string) => void;
+  /** Fetches live AQI telemetry for the given city query or exact pin coordinates. */
   onFetchCity: (cityQuery: string, exactLocation?: LocationSelection) => void;
+  /** Latest live AQI telemetry payload, or null while loading / on initial error. */
   aqiData: LiveAqiData | null;
+  /** True while Open-Meteo telemetry is being fetched. */
   isLoading: boolean;
+  /** Error message if the telemetry request failed. */
   error: string | null;
 }
 
+/**
+ * Hero telemetry band handling city/locality search, quick-select North Indian
+ * urban stations, interactive Google Maps coordinate mini-map confirmation, and
+ * rendering the {@link AirQualityMetricsCard}.
+ */
 export function LiveTelemetryBar({
   cityInput,
   onCityInputChange,
@@ -39,23 +44,25 @@ export function LiveTelemetryBar({
   isLoading,
   error,
 }: LiveTelemetryBarProps) {
-  const [showChart, setShowChart] = useState(true);
   const [selectedLocation, setSelectedLocation] = useState<LocationSelection | null>(null);
   const [isMiniMapOpen, setIsMiniMapOpen] = useState(false);
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
-    const trimmed = cityInput.trim();
-    if (!trimmed) return;
+    const cleaned = sanitizeCityQuery(cityInput, 120);
+    if (!cleaned) return;
 
+    if (cleaned !== cityInput) {
+      onCityInputChange(cleaned);
+    }
     setIsMiniMapOpen(true);
     if (
       selectedLocation &&
-      selectedLocation.displayName.toLowerCase() === trimmed.toLowerCase()
+      selectedLocation.displayName.toLowerCase() === cleaned.toLowerCase()
     ) {
-      onFetchCity(trimmed, selectedLocation);
+      onFetchCity(cleaned, selectedLocation);
     } else {
-      onFetchCity(trimmed);
+      onFetchCity(cleaned);
     }
   };
 
@@ -103,17 +110,6 @@ export function LiveTelemetryBar({
           longitude: aqiData.longitude,
         }
       : null);
-
-  const category = aqiData ? getAqiCategory(aqiData.current.usAqi) : null;
-  const aqiPercent = aqiData ? Math.min((aqiData.current.usAqi / 400) * 100, 100) : 0;
-
-  const renderSeverityIcon = (level: string) => {
-    if (level === 'good') return <ShieldCheck className="w-4 h-4 shrink-0" aria-hidden="true" />;
-    if (level === 'moderate' || level === 'sensitive') {
-      return <AlertTriangle className="w-4 h-4 shrink-0" aria-hidden="true" />;
-    }
-    return <ShieldAlert className="w-4 h-4 shrink-0" aria-hidden="true" />;
-  };
 
   return (
     <section
@@ -172,7 +168,7 @@ export function LiveTelemetryBar({
           </div>
         </div>
 
-        {/* Quick-Select Cities Interactive Filter Bar + Forecast Toggle */}
+        {/* Quick-Select Cities Interactive Filter Bar + Coordinate Meta */}
         <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
           <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Quick-select cities">
             <span className="text-xs text-slate-400 mr-1">Quick select:</span>
@@ -185,6 +181,8 @@ export function LiveTelemetryBar({
                 <button
                   key={city.label}
                   type="button"
+                  aria-pressed={isSelected}
+                  aria-label={`Select ${city.query} for live air quality`}
                   onClick={() => {
                     setSelectedLocation(null);
                     setIsMiniMapOpen(true);
@@ -205,11 +203,17 @@ export function LiveTelemetryBar({
           </div>
 
           {aqiData && (
-            <div className="flex items-center gap-4 text-xs text-slate-400">
+            <div className="flex items-center gap-4 text-xs text-slate-300">
               <button
                 type="button"
+                aria-expanded={isMiniMapOpen}
+                aria-label={
+                  isMiniMapOpen
+                    ? `Hide coordinate mini-map for ${aqiData.displayName}`
+                    : `Show coordinate mini-map for ${aqiData.displayName}`
+                }
                 onClick={() => setIsMiniMapOpen((prev) => !prev)}
-                className="inline-flex items-center gap-1.5 font-mono tabular-nums hover:text-emerald-300 transition-colors cursor-pointer"
+                className="inline-flex items-center gap-1.5 font-mono tabular-nums hover:text-emerald-300 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 rounded"
                 title={isMiniMapOpen ? 'Hide coordinate mini-map' : 'Show coordinate mini-map'}
               >
                 <MapPin className="w-3.5 h-3.5 text-emerald-400 shrink-0" aria-hidden="true" />
@@ -217,13 +221,22 @@ export function LiveTelemetryBar({
                   {aqiData.displayName} ({aqiData.latitude.toFixed(2)}°N, {aqiData.longitude.toFixed(2)}°E)
                 </span>
               </button>
-              <span aria-hidden="true" className="text-slate-700 hidden sm:inline">·</span>
+              <span aria-hidden="true" className="text-slate-600 hidden sm:inline">·</span>
               <span className="hidden sm:inline font-mono tabular-nums">
                 {formatObservedTime(aqiData.observedAt)}
               </span>
             </div>
           )}
         </div>
+
+        {/* Screen-reader live status announcement for dynamic AQI updates */}
+        <p className="sr-only" role="status" aria-live="polite">
+          {isLoading
+            ? 'Fetching live air quality telemetry.'
+            : aqiData
+              ? `Live reading for ${aqiData.displayName}: US AQI ${aqiData.current.usAqi}, PM2.5 ${aqiData.current.pm25.toFixed(1)} micrograms per cubic meter.`
+              : ''}
+        </p>
 
         {/* Error State */}
         {error && (
@@ -258,127 +271,8 @@ export function LiveTelemetryBar({
           </div>
         )}
 
-        {/* 4-Column Live Telemetry Strip */}
-        {aqiData && category && (
-          <div className="border border-slate-800 rounded-xl bg-slate-950/60 overflow-hidden">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-slate-800">
-              {/* Metric 1: Live US AQI */}
-              <div className="p-5 flex flex-col justify-between gap-3">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-medium text-slate-400">Live US AQI</span>
-                  <span
-                    className={`inline-flex items-center gap-1.5 text-xs font-semibold ${category.darkTextClass}`}
-                  >
-                    {renderSeverityIcon(category.level)}
-                    <span>{category.shortLabel}</span>
-                  </span>
-                </div>
-
-                <div>
-                  <div className="flex items-baseline gap-2">
-                    <span className="text-4xl font-mono font-semibold text-white tabular-nums leading-none">
-                      {aqiData.current.usAqi}
-                    </span>
-                    <span className="text-xs font-mono text-slate-400">US EPA</span>
-                  </div>
-                  {/* Calibrated AQI Scale Bar */}
-                  <div className="mt-3 h-1.5 w-full rounded-full bg-slate-800 overflow-hidden">
-                    <div
-                      className={`h-full rounded-full transition-all duration-300 ${category.barColor}`}
-                      style={{ width: `${Math.max(aqiPercent, 4)}%` }}
-                    />
-                  </div>
-                </div>
-
-                <p className="text-xs text-slate-400 leading-relaxed">
-                  {category.label} · {category.healthNote}
-                </p>
-              </div>
-
-              {/* Metric 2: PM2.5 */}
-              <div className="p-5 flex flex-col justify-between gap-3">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-medium text-slate-400">Fine Particulate (PM2.5)</span>
-                  <Wind className="w-4 h-4 text-slate-500 shrink-0" aria-hidden="true" />
-                </div>
-
-                <div className="flex items-baseline">
-                  <span className="text-4xl font-mono font-semibold text-white tabular-nums leading-none">
-                    {aqiData.current.pm25.toFixed(1)}
-                  </span>
-                  <span className="text-xs font-mono text-slate-400 ml-1.5">µg/m³</span>
-                </div>
-
-                <p className="text-xs text-amber-300/90 font-mono tabular-nums">
-                  {getWhoPm25Multiple(aqiData.current.pm25)}
-                </p>
-              </div>
-
-              {/* Metric 3: PM10 */}
-              <div className="p-5 flex flex-col justify-between gap-3">
-                <span className="text-xs font-medium text-slate-400">Coarse Dust &amp; Smoke (PM10)</span>
-
-                <div className="flex items-baseline">
-                  <span className="text-4xl font-mono font-semibold text-white tabular-nums leading-none">
-                    {aqiData.current.pm10.toFixed(1)}
-                  </span>
-                  <span className="text-xs font-mono text-slate-400 ml-1.5">µg/m³</span>
-                </div>
-
-                <div className="flex items-center gap-2 text-xs text-slate-400 font-mono tabular-nums">
-                  <span>
-                    NO₂ {aqiData.current.no2 !== null ? `${aqiData.current.no2} µg/m³` : '—'}
-                  </span>
-                  <span aria-hidden="true" className="text-slate-600">·</span>
-                  <span>
-                    O₃ {aqiData.current.ozone !== null ? `${aqiData.current.ozone} µg/m³` : '—'}
-                  </span>
-                </div>
-              </div>
-
-              {/* Metric 4: Safe Outdoor Window */}
-              <div className="p-5 flex flex-col justify-between gap-3">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-medium text-slate-400">Safe Outdoor Window</span>
-                  <Clock className="w-4 h-4 text-emerald-400 shrink-0" aria-hidden="true" />
-                </div>
-
-                <div>
-                  <p className="text-xl font-mono font-semibold text-emerald-300 tabular-nums leading-tight">
-                    {aqiData.safeWindow.windowLabel}
-                  </p>
-                  <p className="mt-1 text-xs font-mono tabular-nums text-slate-300">
-                    Est. AQI {aqiData.safeWindow.avgAqi} · PM2.5 {aqiData.safeWindow.avgPm25} µg/m³
-                  </p>
-                </div>
-
-                <p className="text-xs text-slate-400 leading-relaxed">
-                  {aqiData.safeWindow.advisory}
-                </p>
-              </div>
-            </div>
-
-            {/* Expandable 24-Hour Dispersion Curve */}
-            <div className="px-5 pb-5 bg-slate-950/30">
-              {showChart ? (
-                <DispersionChart
-                  hourly={aqiData.hourly}
-                  safeWindow={aqiData.safeWindow}
-                  cityName={aqiData.displayName}
-                />
-              ) : null}
-              <div className="mt-3 flex justify-end">
-                <button
-                  type="button"
-                  onClick={() => setShowChart((prev) => !prev)}
-                  className="text-xs font-medium text-slate-400 hover:text-emerald-300 transition-colors cursor-pointer"
-                >
-                  {showChart ? 'Hide 24-hour dispersion curve' : 'Show 24-hour dispersion curve'}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+        {/* 4-Column Live Telemetry Strip & 24h Dispersion Curve */}
+        {aqiData && <AirQualityMetricsCard aqiData={aqiData} />}
       </div>
     </section>
   );

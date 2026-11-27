@@ -4,8 +4,18 @@ import type {
   LiveAqiData,
   RoutineRiskLevel,
   SmogActionPlan,
+  SmokerRecoveryModule,
   SustainableSwap,
 } from '../types/vayu';
+
+import {
+  calculateCombinedParticulateLoad,
+  isIndividualSoloProfile,
+} from './exposureCalculator.ts';
+import {
+  buildFallbackWeatherSnapshot,
+  calculateFogHazard,
+} from './fogHazardCalculator.ts';
 
 function getRiskForAqi(aqi: number): RoutineRiskLevel {
   if (aqi <= 50) return 'Low';
@@ -14,6 +24,11 @@ function getRiskForAqi(aqi: number): RoutineRiskLevel {
   return 'Severe';
 }
 
+/**
+ * Builds a complete, deterministic offline {@link SmogActionPlan} tailored to live
+ * AQI telemetry, household vulnerability profiles, commute, home setup, and daily
+ * cigarette exposure when the upstream Gemini API is rate-limited or unavailable.
+ */
 export function buildLocalSmogPlan(
   aqiData: LiveAqiData,
   profile: FamilyProfile
@@ -28,109 +43,217 @@ export function buildLocalSmogPlan(
   const hasElderly = profile.members.includes('Elderly Parents');
   const hasChildren = profile.members.includes('Children');
   const hasAthlete = profile.members.includes('Outdoor Runner/Athlete');
+  const isSolo = isIndividualSoloProfile(profile.members);
   const isSensitiveHousehold = hasAsthma || hasElderly || hasChildren;
+  const {
+    cigarettesCount,
+    smokingEquivalentPm25,
+    combinedPm25Burden,
+    hasSmokingExposure,
+  } = calculateCombinedParticulateLoad(pm25, profile.cigarettesSmokedToday);
 
   const morningRisk: RoutineRiskLevel = getRiskForAqi(Math.round(usAqi * 1.15));
   const afternoonRisk: RoutineRiskLevel = getRiskForAqi(safeWindow.avgAqi);
   const eveningRisk: RoutineRiskLevel = getRiskForAqi(Math.round(usAqi * 1.1));
   const nightRisk: RoutineRiskLevel = getRiskForAqi(Math.round(usAqi * 1.2));
 
-  const citySummary = `${displayName} is currently recording US AQI ${usAqi} with PM2.5 at ${pm25.toFixed(
-    1
-  )} µg/m³ and PM10 at ${pm10.toFixed(1)} µg/m³.`;
+  const citySummary = hasSmokingExposure
+    ? `${displayName} is recording US AQI ${usAqi} with ambient PM2.5 at ${pm25.toFixed(
+        1
+      )} µg/m³ (combined with ${cigarettesCount} ${
+        cigarettesCount === 1 ? 'cigarette' : 'cigarettes'
+      } today: ~${combinedPm25Burden.toFixed(1)} µg/m³ equivalent PM2.5 lung burden).`
+    : `${displayName} is currently recording US AQI ${usAqi} with PM2.5 at ${pm25.toFixed(
+        1
+      )} µg/m³ and PM10 at ${pm10.toFixed(1)} µg/m³.`;
 
-  const headlineAdvisory = isSevere
-    ? `Keep ${profile.members.join(
-        ', '
-      )} indoors with sealed drafts, run indoor filtration or wet-mopping protocols, and require a snug N95 mask for any essential ${
-        profile.commute
-      } travel.`
-    : isUnhealthy
-      ? `Limit outdoor exposure to the ${safeWindow.windowLabel} window (est. AQI ${safeWindow.avgAqi}), wear N95 protection during ${profile.commute} trips, and protect sensitive lungs indoors.`
-      : `Plan outdoor errands and brief cross-ventilation during ${safeWindow.windowLabel} (est. AQI ${safeWindow.avgAqi}) while monitoring evening winter smog build-up.`;
+  const baseHeadlineAdvisory = isSolo
+    ? isSevere
+      ? `Stay indoors with sealed room drafts, run personal single-room filtration or wet-mopping, wear a snug N95 mask for essential solo ${profile.commute} trips, and move your workouts indoors.`
+      : isUnhealthy
+        ? `Time your solo errands and outdoor exercise for the ${safeWindow.windowLabel} window (est. AQI ${safeWindow.avgAqi}), wear N95 protection on your ${profile.commute} commute, and keep your workspace/bedroom sealed.`
+        : `Schedule your solo outdoor workout, commute errands, and brief room cross-ventilation during ${safeWindow.windowLabel} (est. AQI ${safeWindow.avgAqi}) before evening smog builds up.`
+    : isSevere
+      ? `Keep ${profile.members.join(
+          ', '
+        )} indoors with sealed drafts, run indoor filtration or wet-mopping protocols, and require a snug N95 mask for any essential ${
+          profile.commute
+        } travel.`
+      : isUnhealthy
+        ? `Limit outdoor exposure to the ${safeWindow.windowLabel} window (est. AQI ${safeWindow.avgAqi}), wear N95 protection during ${profile.commute} trips, and protect sensitive lungs indoors.`
+        : `Plan outdoor errands and brief cross-ventilation during ${safeWindow.windowLabel} (est. AQI ${safeWindow.avgAqi}) while monitoring evening winter smog build-up.`;
 
-  const dailyRoutine: SmogActionPlan['dailyRoutine'] = [
-    {
-      period: 'Morning',
-      timeRange: '5:30 AM – 10:00 AM',
-      riskLevel: morningRisk,
-      ventilationAction:
-        'Keep all exterior windows and balcony doors tightly shut; run kitchen exhaust only while actively cooking.',
-      inversionExplanation:
-        'Overnight radiative cooling creates a shallow winter temperature inversion layer that traps vehicular exhaust and domestic smoke near ground level until late morning sun warms the air.',
-      maskGuidance: isUnhealthy
-        ? 'Fitted N95/KN95 required for all outdoor departures; avoid cloth scarves.'
-        : 'N95 advised for asthma/elderly commuters during peak rush-hour intersections.',
-      familyActions: [
-        hasElderly
-          ? 'Shift morning walks for elderly parents indoors to hallway pacing or gentle stretching.'
-          : 'Delay non-essential outdoor activity until the afternoon dispersion window.',
-        hasChildren
-          ? 'Provide children with a properly sealed kids-size N95 mask and warm water hydration before school transit.'
-          : `Prepare ${profile.commute} transit with minimal idling and eye-rinse protection.`,
-        hasAsthma
-          ? 'Keep reliever inhaler accessible and avoid cold-air deep breaths right after stepping outside.'
-          : 'Wet-wipe entryway dust and leave outdoor footwear at the threshold.',
-      ],
-    },
-    {
-      period: 'Afternoon',
-      timeRange: '12:00 PM – 4:30 PM',
-      riskLevel: afternoonRisk,
-      ventilationAction:
-        safeWindow.avgAqi <= 150
-          ? `Brief 20-minute cross-ventilation around ${safeWindow.windowLabel} to flush indoor CO₂ while outdoor particulate load is lowest.`
-          : `Keep windows mostly closed even during ${safeWindow.windowLabel}; crack an interior ventilator only 5–10 minutes if CO₂ feels stuffy.`,
-      inversionExplanation:
-        'Peak solar heating lifts the atmospheric mixing height, dispersing trapped morning PM2.5 upward and creating the lowest relative particulate concentrations of the day.',
-      maskGuidance:
-        safeWindow.avgAqi > 150
-          ? 'Wear an N95 mask for outdoor errands even during the midday dip.'
-          : 'Optional for healthy adults on short errands; recommended for asthma or elderly members.',
-      familyActions: [
-        `Schedule essential outdoor errands and groceries inside the ${safeWindow.windowLabel} window (est. AQI ${safeWindow.avgAqi}).`,
-        hasAthlete
-          ? 'Keep high-intensity cardio indoors if AQI remains above 150; use the Train tab Surya Namaskar and Ujjayi conditioning instead.'
-          : 'Complete wet-mopping and damp-cloth dusting while solar warmth helps floors dry rapidly.',
-      ],
-    },
-    {
-      period: 'Evening',
-      timeRange: '5:00 PM – 9:00 PM',
-      riskLevel: eveningRisk,
-      ventilationAction:
-        'Seal windows before 5:00 PM as sunset cools the ground and rush-hour emissions spike.',
-      inversionExplanation:
-        'As sunlight fades, the surface cools rapidly and the winter boundary layer collapses downward, trapping peak evening traffic exhaust and neighborhood biomass smoke at breathing height.',
-      maskGuidance:
-        'Wear an N95 mask during return commutes and avoid walking near congested arterial roads.',
-      familyActions: [
-        `On returning from ${profile.commute}, wash face, rinse nostrils with saline spray, and change outer clothes to shed settled PM2.5.`,
-        'Avoid incense sticks, dhoop, mosquito coils, or dry frying indoors; use covered pans and kitchen exhaust.',
-        'Practice 10 minutes of slow indoor lung-care breathing from the Health tab once indoor air is settled.',
-      ],
-    },
-    {
-      period: 'Night',
-      timeRange: '9:30 PM – 5:30 AM',
-      riskLevel: nightRisk,
-      ventilationAction:
-        'Keep bedroom doors and windows sealed; seal bottom door gaps with a rolled damp towel or weatherstrip.',
-      inversionExplanation:
-        'Calm night winds and strong nocturnal temperature inversion cause PM2.5 and PM10 concentrations to climb steadily through the night, seeping indoors through unsealed frames.',
-      maskGuidance: 'No mask required indoors; prioritize clean bedroom air zoning.',
-      familyActions: [
-        profile.homeSetup === '1 HEPA Air Purifier'
-          ? 'Move your HEPA air purifier into the primary sleeping bedroom 45 minutes before bedtime on medium-quiet mode.'
-          : profile.homeSetup === 'Central Filtration'
-            ? 'Verify central HVAC recirculation is set to MERV-13+ filtration with fresh-air intake throttled during severe smog.'
-            : 'Keep bedroom doors shut to create a low-infiltration clean zone and place a damp microfiber draft stopper at the door base.',
-        isSensitiveHousehold
-          ? 'Keep bedrooms dust-free and slightly humidified with warm steam inhalation before sleep if throat irritation occurs.'
-          : 'Run a 5-minute diaphragmatic belly breathing wind-down before sleep.',
-      ],
-    },
-  ];
+  const headlineAdvisory = hasSmokingExposure
+    ? `${baseHeadlineAdvisory} Because ${cigarettesCount} ${
+        cigarettesCount === 1 ? 'cigarette adds' : 'cigarettes add'
+      } ~${smokingEquivalentPm25} µg/m³ PM2.5 burden, start the 60-minute lung-recovery initials immediately and avoid outdoor exertion for at least 2 hours.`
+    : baseHeadlineAdvisory;
+
+  const dailyRoutine: SmogActionPlan['dailyRoutine'] = isSolo
+    ? [
+        {
+          period: 'Morning',
+          timeRange: '5:30 AM – 10:00 AM',
+          riskLevel: morningRisk,
+          ventilationAction:
+            'Keep your bedroom and workspace windows tightly shut; run the kitchen exhaust fan only while making breakfast or tea.',
+          inversionExplanation:
+            'Overnight radiative cooling creates a shallow winter temperature inversion layer that traps vehicular exhaust and domestic smoke near ground level until late morning sun warms the air.',
+          maskGuidance: isUnhealthy
+            ? 'Fitted N95/KN95 required for your solo commute and outdoor errands; avoid cloth scarves.'
+            : 'N95 advised for solo rush-hour commuting through congested intersections.',
+          familyActions: [
+            hasAthlete
+              ? 'Move your morning run or outdoor workout indoors until afternoon dispersion improves.'
+              : 'Delay non-essential outdoor walks or solo errands until the afternoon dispersion window.',
+            profile.commute === 'Work From Home'
+              ? 'Keep your personal home-office room sealed during peak morning traffic and take short indoor mobility breaks.'
+              : `Time your solo ${profile.commute} departure to skip peak idling queues and keep an N95 mask sealed over your nose bridge.`,
+            hasAsthma
+              ? 'Keep your reliever inhaler in your daily commute bag and avoid cold-air deep breaths right after stepping outside.'
+              : 'Leave outdoor footwear at the entry and damp-wipe desk dust before starting your workday.',
+          ],
+        },
+        {
+          period: 'Afternoon',
+          timeRange: '12:00 PM – 4:30 PM',
+          riskLevel: afternoonRisk,
+          ventilationAction:
+            safeWindow.avgAqi <= 150
+              ? `Open windows for a brief 20-minute cross-ventilation of your room/workspace around ${safeWindow.windowLabel} to flush indoor CO₂ while outdoor particulate load is lowest.`
+              : `Keep windows mostly closed even during ${safeWindow.windowLabel}; crack an interior vent only 5–10 minutes if your workspace feels stuffy.`,
+          inversionExplanation:
+            'Peak solar heating lifts the atmospheric mixing height, dispersing trapped morning PM2.5 upward and creating the lowest relative particulate concentrations of the day.',
+          maskGuidance:
+            safeWindow.avgAqi > 150
+              ? 'Wear an N95 mask for solo midday errands, lunch walks, or transit.'
+              : 'Optional for a quick solo midday walk; recommended near busy arterial roads.',
+          familyActions: [
+            `Batch your solo errands, grocery runs, and lunch-break walks into the ${safeWindow.windowLabel} window (est. AQI ${safeWindow.avgAqi}).`,
+            hasAthlete
+              ? 'Keep high-intensity cardio indoors if AQI stays above 150; use the Train tab Surya Namaskar and Ujjayi conditioning instead.'
+              : 'Schedule any brief solo outdoor fitness walk during this dispersion dip, and complete quick wet-mopping indoors while floors dry fast.',
+          ],
+        },
+        {
+          period: 'Evening',
+          timeRange: '5:00 PM – 9:00 PM',
+          riskLevel: eveningRisk,
+          ventilationAction:
+            'Seal your apartment or bedroom windows before 5:00 PM as sunset cools the ground and rush-hour commute emissions spike.',
+          inversionExplanation:
+            'As sunlight fades, the surface cools rapidly and the winter boundary layer collapses downward, trapping peak evening traffic exhaust and neighborhood biomass smoke at breathing height.',
+          maskGuidance:
+            'Wear a snug N95 mask on your solo return commute and avoid jogging or walking along congested arterial roads.',
+          familyActions: [
+            `Right after returning from your ${profile.commute} commute, wash your face, rinse nostrils with saline spray, and change out of outer commute clothes.`,
+            'Keep your personal living space smoke-free—avoid incense, scented candles, mosquito coils, or smoky pan-frying indoors.',
+            'Decompress after work with 10 minutes of indoor lung-care breathing or solo mobility drills from the Health/Train tabs.',
+          ],
+        },
+        {
+          period: 'Night',
+          timeRange: '9:30 PM – 5:30 AM',
+          riskLevel: nightRisk,
+          ventilationAction:
+            'Keep your bedroom door and windows sealed; place a rolled damp towel or weatherstrip along bottom door gaps.',
+          inversionExplanation:
+            'Calm night winds and strong nocturnal temperature inversion cause PM2.5 and PM10 concentrations to climb steadily through the night, seeping indoors through unsealed frames.',
+          maskGuidance: 'No mask required indoors; focus on clean single-room bedroom air zoning.',
+          familyActions: [
+            profile.homeSetup === '1 HEPA Air Purifier'
+              ? 'Run your HEPA air purifier in your closed bedroom 45 minutes before sleep on medium-quiet mode for overnight personal lung recovery.'
+              : profile.homeSetup === 'Central Filtration'
+                ? 'Verify central HVAC recirculation is set to MERV-13+ filtration with fresh-air intake throttled during severe smog.'
+                : 'Keep your bedroom door shut to isolate a compact solo clean-air zone and place a damp microfiber draft stopper at the door base.',
+            hasAsthma
+              ? 'Keep your personal reliever inhaler on your nightstand and take 5 minutes of warm plain steam if throat irritation appears.'
+              : 'Finish your day with a 5-minute solo diaphragmatic belly breathing wind-down to lower resting respiratory rate overnight.',
+          ],
+        },
+      ]
+    : [
+        {
+          period: 'Morning',
+          timeRange: '5:30 AM – 10:00 AM',
+          riskLevel: morningRisk,
+          ventilationAction:
+            'Keep all exterior windows and balcony doors tightly shut; run kitchen exhaust only while actively cooking.',
+          inversionExplanation:
+            'Overnight radiative cooling creates a shallow winter temperature inversion layer that traps vehicular exhaust and domestic smoke near ground level until late morning sun warms the air.',
+          maskGuidance: isUnhealthy
+            ? 'Fitted N95/KN95 required for all outdoor departures; avoid cloth scarves.'
+            : 'N95 advised for asthma/elderly commuters during peak rush-hour intersections.',
+          familyActions: [
+            hasElderly
+              ? 'Shift morning walks for elderly parents indoors to hallway pacing or gentle stretching.'
+              : 'Delay non-essential outdoor activity until the afternoon dispersion window.',
+            hasChildren
+              ? 'Provide children with a properly sealed kids-size N95 mask and warm water hydration before school transit.'
+              : `Prepare ${profile.commute} transit with minimal idling and eye-rinse protection.`,
+            hasAsthma
+              ? 'Keep reliever inhaler accessible and avoid cold-air deep breaths right after stepping outside.'
+              : 'Wet-wipe entryway dust and leave outdoor footwear at the threshold.',
+          ],
+        },
+        {
+          period: 'Afternoon',
+          timeRange: '12:00 PM – 4:30 PM',
+          riskLevel: afternoonRisk,
+          ventilationAction:
+            safeWindow.avgAqi <= 150
+              ? `Brief 20-minute cross-ventilation around ${safeWindow.windowLabel} to flush indoor CO₂ while outdoor particulate load is lowest.`
+              : `Keep windows mostly closed even during ${safeWindow.windowLabel}; crack an interior ventilator only 5–10 minutes if CO₂ feels stuffy.`,
+          inversionExplanation:
+            'Peak solar heating lifts the atmospheric mixing height, dispersing trapped morning PM2.5 upward and creating the lowest relative particulate concentrations of the day.',
+          maskGuidance:
+            safeWindow.avgAqi > 150
+              ? 'Wear an N95 mask for outdoor errands even during the midday dip.'
+              : 'Optional for healthy adults on short errands; recommended for asthma or elderly members.',
+          familyActions: [
+            `Schedule essential outdoor errands and groceries inside the ${safeWindow.windowLabel} window (est. AQI ${safeWindow.avgAqi}).`,
+            hasAthlete
+              ? 'Keep high-intensity cardio indoors if AQI remains above 150; use the Train tab Surya Namaskar and Ujjayi conditioning instead.'
+              : 'Complete wet-mopping and damp-cloth dusting while solar warmth helps floors dry rapidly.',
+          ],
+        },
+        {
+          period: 'Evening',
+          timeRange: '5:00 PM – 9:00 PM',
+          riskLevel: eveningRisk,
+          ventilationAction:
+            'Seal windows before 5:00 PM as sunset cools the ground and rush-hour emissions spike.',
+          inversionExplanation:
+            'As sunlight fades, the surface cools rapidly and the winter boundary layer collapses downward, trapping peak evening traffic exhaust and neighborhood biomass smoke at breathing height.',
+          maskGuidance:
+            'Wear an N95 mask during return commutes and avoid walking near congested arterial roads.',
+          familyActions: [
+            `On returning from ${profile.commute}, wash face, rinse nostrils with saline spray, and change outer clothes to shed settled PM2.5.`,
+            'Avoid incense sticks, dhoop, mosquito coils, or dry frying indoors; use covered pans and kitchen exhaust.',
+            'Practice 10 minutes of slow indoor lung-care breathing from the Health tab once indoor air is settled.',
+          ],
+        },
+        {
+          period: 'Night',
+          timeRange: '9:30 PM – 5:30 AM',
+          riskLevel: nightRisk,
+          ventilationAction:
+            'Keep bedroom doors and windows sealed; seal bottom door gaps with a rolled damp towel or weatherstrip.',
+          inversionExplanation:
+            'Calm night winds and strong nocturnal temperature inversion cause PM2.5 and PM10 concentrations to climb steadily through the night, seeping indoors through unsealed frames.',
+          maskGuidance: 'No mask required indoors; prioritize clean bedroom air zoning.',
+          familyActions: [
+            profile.homeSetup === '1 HEPA Air Purifier'
+              ? 'Move your HEPA air purifier into the primary sleeping bedroom 45 minutes before bedtime on medium-quiet mode.'
+              : profile.homeSetup === 'Central Filtration'
+                ? 'Verify central HVAC recirculation is set to MERV-13+ filtration with fresh-air intake throttled during severe smog.'
+                : 'Keep bedroom doors shut to create a low-infiltration clean zone and place a damp microfiber draft stopper at the door base.',
+            isSensitiveHousehold
+              ? 'Keep bedrooms dust-free and slightly humidified with warm steam inhalation before sleep if throat irritation occurs.'
+              : 'Run a 5-minute diaphragmatic belly breathing wind-down before sleep.',
+          ],
+        },
+      ];
 
   const indoorHacks: IndoorHack[] =
     profile.homeSetup === '1 HEPA Air Purifier'
@@ -140,8 +263,9 @@ export function buildLocalSmogPlan(
             estimatedPm25ReductionPct: 68,
             costEstimate: 'Free',
             timeRequired: '5 min daily',
-            howToExecute:
-              'Keep your HEPA purifier in one closed bedroom at night and the main family room during the day, placed at least 30 cm away from walls and curtains.',
+            howToExecute: isSolo
+              ? 'Keep your HEPA purifier in your closed bedroom at night and next to your personal workspace during the day, placed at least 30 cm away from walls and curtains.'
+              : 'Keep your HEPA purifier in one closed bedroom at night and the main family room during the day, placed at least 30 cm away from walls and curtains.',
             whyItWorks:
               'A single HEPA unit achieves 4–5 air changes per hour in a closed 150–200 sq ft room, whereas open doors dilute filtration efficiency dramatically.',
           },
@@ -354,14 +478,28 @@ export function buildLocalSmogPlan(
           'Share in the RWA WhatsApp group and request building security to switch night guards to electric heaters instead of wood/coal fires.',
       };
 
-  const gentleHold = isSevere || hasAsthma || hasElderly ? 2 : 4;
+  const gentleHold = isSevere || hasAsthma || hasElderly || cigarettesCount >= 3 ? 2 : 4;
 
   const healthYoga: SmogActionPlan['healthYoga'] = {
-    summary: `Gentle indoor respiratory recovery sessions calibrated for ${profile.members.join(
-      ', '
-    )} at ${displayName}'s live US AQI of ${usAqi}.`,
-    aqiSafetyGuidance: isSevere
-      ? `AQI ${usAqi} is Severe/Poor: practice slow, quiet nasal breathwork indoors only and avoid forceful rapid breathing such as Kapalabhati or Bhastrika.`
+    summary: isSolo
+      ? hasSmokingExposure
+        ? `Personal indoor respiratory recovery sessions tailored to your solo schedule at ${displayName}'s live US AQI ${usAqi} plus ${cigarettesCount} ${
+            cigarettesCount === 1 ? 'cigarette' : 'cigarettes'
+          } today (~${combinedPm25Burden.toFixed(1)} µg/m³ combined PM2.5 load).`
+        : `Personal indoor respiratory recovery sessions tailored to your solo routine and ${profile.commute} commute at ${displayName}'s live US AQI of ${usAqi}.`
+      : hasSmokingExposure
+        ? `Gentle indoor respiratory recovery sessions calibrated for ${profile.members.join(
+            ', '
+          )} at ${displayName}'s live US AQI ${usAqi} plus ${cigarettesCount} ${
+            cigarettesCount === 1 ? 'cigarette' : 'cigarettes'
+          } today (~${combinedPm25Burden.toFixed(1)} µg/m³ combined PM2.5 load).`
+        : `Gentle indoor respiratory recovery sessions calibrated for ${profile.members.join(
+            ', '
+          )} at ${displayName}'s live US AQI of ${usAqi}.`,
+    aqiSafetyGuidance: isSevere || combinedPm25Burden >= 150
+      ? `Combined particulate burden is elevated (AQI ${usAqi}${
+          hasSmokingExposure ? `, ${combinedPm25Burden.toFixed(1)} µg/m³ combined PM2.5` : ''
+        }): practice slow, quiet nasal breathwork indoors only and avoid forceful rapid breathing such as Kapalabhati or Bhastrika.`
       : `Practice indoors away from open windows with relaxed nasal breathing; stop immediately if you notice wheezing or dizziness.`,
     sessions: [
       {
@@ -382,7 +520,9 @@ export function buildLocalSmogPlan(
         tailoredNote:
           hasAsthma || hasElderly || isSevere
             ? 'Keep the breath-hold brief (0–2s) or omit retention entirely; prioritize a gentle, unforced exhale.'
-            : 'Maintain a calm 1:1:1.5 inhale-hold-exhale rhythm in your cleanest room.',
+            : isSolo
+              ? 'Use between focused work blocks or right after your solo commute in your cleanest closed room.'
+              : 'Maintain a calm 1:1:1.5 inhale-hold-exhale rhythm in your cleanest room.',
         pacerConfig: { inhaleSec: 4, holdSec: gentleHold, exhaleSec: 6 },
       },
       {
@@ -400,9 +540,11 @@ export function buildLocalSmogPlan(
         ],
         lungOrPerformanceImpact:
           'Gentle nasal humming boosts paranasal nitric oxide release, soothing smog-irritated sinuses and throat lining.',
-        tailoredNote: hasChildren
-          ? 'Easy and soothing for children and seniors alike—keep the hum soft and playful without straining the throat.'
-          : 'Ideal before bedtime to ease dry winter smog throat scratchiness.',
+        tailoredNote: isSolo
+          ? 'Ideal post-commute or before sleep to calm dry smog-irritated airways after a long solo workday.'
+          : hasChildren
+            ? 'Easy and soothing for children and seniors alike—keep the hum soft and playful without straining the throat.'
+            : 'Ideal before bedtime to ease dry winter smog throat scratchiness.',
         pacerConfig: { inhaleSec: 4, holdSec: 0, exhaleSec: 6 },
       },
       {
@@ -420,8 +562,9 @@ export function buildLocalSmogPlan(
         ],
         lungOrPerformanceImpact:
           'Recruits lower lung lobes, reduces accessory neck-muscle fatigue, and improves oxygen exchange efficiency.',
-        tailoredNote:
-          'Safe baseline recovery technique for elderly parents and asthma-sensitive members even on AQI > 200 days.',
+        tailoredNote: isSolo
+          ? 'Quick personal recovery reset after solo commuting or desk work—safe even on AQI > 200 evenings.'
+          : 'Safe baseline recovery technique for elderly parents and asthma-sensitive members even on AQI > 200 days.',
         pacerConfig: { inhaleSec: 4, holdSec: 2, exhaleSec: 6 },
       },
       {
@@ -439,9 +582,11 @@ export function buildLocalSmogPlan(
         ],
         lungOrPerformanceImpact:
           'Stretches tight pectoral and intercostal muscles to expand anterior chest capacity and ease shallow breathing.',
-        tailoredNote: hasElderly
-          ? 'Elderly practitioners can substitute a seated chair chest-opener by interlacing hands behind the backrest.'
-          : 'Keep the lift low and comfortable; never crunch the lower back.',
+        tailoredNote: isSolo
+          ? 'Counters rounded desk or handlebar posture from your solo workday and commute; keep the lift low and comfortable.'
+          : hasElderly
+            ? 'Elderly practitioners can substitute a seated chair chest-opener by interlacing hands behind the backrest.'
+            : 'Keep the lift low and comfortable; never crunch the lower back.',
         pacerConfig: { inhaleSec: 4, holdSec: 2, exhaleSec: 5 },
       },
       {
@@ -459,8 +604,9 @@ export function buildLocalSmogPlan(
         ],
         lungOrPerformanceImpact:
           'Passively opens the upper thoracic cavity and bronchial pathways with zero cardiovascular strain.',
-        tailoredNote:
-          'Using a bolster or folded cushion makes this restorative pose completely safe for seniors and asthma recovery.',
+        tailoredNote: isSolo
+          ? 'A zero-strain evening thoracic opener to decompress your chest after solo work hours or indoor training.'
+          : 'Using a bolster or folded cushion makes this restorative pose completely safe for seniors and asthma recovery.',
         pacerConfig: { inhaleSec: 4, holdSec: 2, exhaleSec: 6 },
       },
       {
@@ -486,10 +632,20 @@ export function buildLocalSmogPlan(
   };
 
   const trainYoga: SmogActionPlan['trainYoga'] = {
-    summary: `Indoor smog-day conditioning for runners and active adults when ${displayName} sits at US AQI ${usAqi}, protecting lungs from outdoor PM2.5 inhalation.`,
-    smogConditioningNote: isSevere
-      ? `At AQI ${usAqi}, move all running indoors, keep windows shut, and strictly maintain nasal breathing so minute-ventilation stays controlled.`
-      : `Perform dynamic rounds in a dust-mopped interior room with steady nasal breath pacing to maintain aerobic base safely.`,
+    summary: hasSmokingExposure
+      ? `Low-intensity indoor conditioning calibrated for ${displayName} at US AQI ${usAqi} and ${cigarettesCount} ${
+          cigarettesCount === 1 ? 'cigarette' : 'cigarettes'
+        } today (~${combinedPm25Burden.toFixed(1)} µg/m³ combined PM2.5)—avoid outdoor cardio and prioritize nasal pacing.`
+      : isSolo
+        ? `Personal indoor smog-day fitness and breath conditioning for your solo workout schedule when ${displayName} sits at US AQI ${usAqi}, keeping your lungs protected from outdoor PM2.5.`
+        : `Indoor smog-day conditioning for runners and active adults when ${displayName} sits at US AQI ${usAqi}, protecting lungs from outdoor PM2.5 inhalation.`,
+    smogConditioningNote: hasSmokingExposure
+      ? `Wait at least 2 hours after smoking before starting dynamic movement. With AQI ${usAqi} and ${cigarettesCount} ${
+          cigarettesCount === 1 ? 'cigarette' : 'cigarettes'
+        } logged today, skip outdoor running/HIIT completely and keep indoor sessions slow and strictly nasal-breathed.`
+      : isSevere
+        ? `At AQI ${usAqi}, move all running indoors, keep windows shut, and strictly maintain nasal breathing so minute-ventilation stays controlled.`
+        : `Perform dynamic rounds in a dust-mopped interior room with steady nasal breath pacing to maintain aerobic base safely.`,
     sessions: [
       {
         id: 'train-surya-namaskar',
@@ -590,6 +746,164 @@ export function buildLocalSmogPlan(
     ],
   };
 
+  const smokerRecovery: SmokerRecoveryModule | null = hasSmokingExposure
+    ? {
+        cigarettesCount,
+        smokingEquivalentPm25,
+        combinedPm25Burden,
+        burdenSummary: `Smoking ${cigarettesCount} ${
+          cigarettesCount === 1 ? 'cigarette' : 'cigarettes'
+        } today adds roughly +${smokingEquivalentPm25} µg/m³ equivalent PM2.5 on top of ${displayName}'s ambient ${pm25.toFixed(
+          1
+        )} µg/m³ (${combinedPm25Burden.toFixed(
+          1
+        )} µg/m³ total). Follow these immediate 60-minute recovery initials and gentle indoor lung-clearing drills.`,
+        cardioWarning:
+          isUnhealthy || cigarettesCount >= 3
+            ? `Avoid all intense outdoor cardio, running, or mouth-breathing exertion for at least 2 hours (and all day outdoors while AQI is ${usAqi}). Elevated carbon monoxide from smoke plus ambient PM2.5 sharply increases cardiovascular and bronchial strain.`
+            : `Avoid strenuous outdoor cardio for at least 2 hours after smoking so heart rate, vascular tone, and airway cilia begin recovering in clean indoor air.`,
+        immediateInitials: [
+          {
+            id: 'smoker-initial-steam',
+            title: 'Warm Saline Gargle & Plain Steam Inhalation',
+            timingWindow: '0–15 min',
+            action:
+              'Gargle gently with warm salt water for 30 seconds, then inhale plain warm steam (towel over bowl, no harsh menthol/eucalyptus oils) for 5–7 minutes indoors.',
+            physiologicalReason:
+              'Hydrates dried pharyngeal lining and loosens tar-trapped mucus so airway cilia can clear smoke and ambient PM2.5 particles upward.',
+          },
+          {
+            id: 'smoker-initial-hydration',
+            title: 'Warm Water + Vitamin-C / Antioxidant Hydration',
+            timingWindow: '15–30 min',
+            action:
+              'Sip 350–500 ml of warm water with fresh lemon/amla or warm ginger-tulsi infusion within the first 30 minutes, avoiding iced or sugary drinks.',
+            physiologicalReason:
+              'Thins bronchial secretions for easier clearance while Vitamin C and polyphenols help buffer acute free-radical oxidative stress in lung tissue.',
+          },
+          {
+            id: 'smoker-initial-exertion-hold',
+            title: '2-Hour Outdoor Exertion Hold',
+            timingWindow: 'Next 2 hours',
+            action:
+              'Pause brisk walking, running, stair sprints, and heavy outdoor errands for at least 2 full hours; wear a snug N95 mask if stepping outside is unavoidable.',
+            physiologicalReason:
+              'Prevents elevated minute-ventilation from pulling ambient winter PM2.5 deep into smoke-sensitized bronchioles while carboxyhemoglobin levels remain raised.',
+          },
+          {
+            id: 'smoker-initial-clean-air',
+            title: 'Switch Immediately to Filtered / Sealed Indoor Air',
+            timingWindow: 'Immediate',
+            action:
+              profile.homeSetup === 'No Air Purifier (Budget/Natural hacks needed)'
+                ? 'Move into a closed interior room with wet-mopped floors and damp-cloth door-gap seals, avoiding incense, dhoop, or kitchen frying fumes.'
+                : `Move immediately into your ${profile.homeSetup} clean-air room with windows shut and fan running on medium-high for 45 minutes.`,
+            physiologicalReason:
+              'Halts ongoing dual particulate exposure immediately so mucociliary clearance can outpace fresh fine-particle deposition.',
+          },
+        ],
+        lungClearingExercises: [
+          {
+            id: 'smoker-pursed-lip',
+            name: 'Pursed-Lip Breathing (Trapped-Air Release)',
+            categoryGroup: 'Lung-Clearing Drill',
+            sessionType: 'Pranayama',
+            durationMinutes: 5,
+            durationLabel: '5 min (10–12 slow cycles)',
+            howToSteps: [
+              'Sit upright in a clean indoor room with neck and shoulders completely relaxed.',
+              'Inhale slowly and quietly through your nose for 4 seconds without lifting your shoulders.',
+              'Purse your lips gently as if cooling hot tea or blowing through a narrow straw.',
+              'Exhale slowly and evenly through pursed lips for 6–8 seconds without forcing the last air out.',
+            ],
+            lungOrPerformanceImpact:
+              'Creates gentle positive end-expiratory pressure (PEEP) that keeps small airways open longer, releases stale trapped air, and improves oxygen exchange.',
+            tailoredNote: `Calibrated for ${cigarettesCount} ${
+              cigarettesCount === 1 ? 'cigarette' : 'cigarettes'
+            } today at AQI ${usAqi}: keep the exhale twice as long as the inhale and never gasp.`,
+            pacerConfig: { inhaleSec: 4, holdSec: 0, exhaleSec: 7 },
+          },
+          {
+            id: 'smoker-diaphragmatic',
+            name: 'Diaphragmatic (Belly) Breathing',
+            categoryGroup: 'Lung-Clearing Drill',
+            sessionType: 'Pranayama',
+            durationMinutes: 6,
+            durationLabel: '6 min (12 calm cycles)',
+            howToSteps: [
+              'Lie back with knees bent or sit supported with one hand on your upper chest and one on your abdomen.',
+              'Inhale gently through the nose for 4 seconds so your lower belly rises while your upper chest stays still.',
+              'Hold comfortably for 2 seconds without clenching your jaw or throat.',
+              'Exhale smoothly for 6 seconds as your abdomen falls naturally inward.',
+            ],
+            lungOrPerformanceImpact:
+              'Ventilates lower lung bases that often stay under-recruited after smoking, reducing shallow chest breathing and calming nicotine-elevated heart rate.',
+            tailoredNote:
+              'Practice indoors away from smoke or traffic drafts; pause if you feel lightheaded.',
+            pacerConfig: { inhaleSec: 4, holdSec: 2, exhaleSec: 6 },
+          },
+          {
+            id: 'smoker-huff-cough',
+            name: 'Huff Coughing (Controlled Airway Clearance)',
+            categoryGroup: 'Airway Clearance',
+            sessionType: 'Restorative',
+            durationMinutes: 4,
+            durationLabel: '4 min (3 gentle cycles)',
+            howToSteps: [
+              'Take 3 slow diaphragmatic breaths first to relax the chest wall after warm water or steam.',
+              'Take a medium-sized gentle breath in through your nose (about 70% full, never a forceful gasp).',
+              'Open your mouth in an "O" shape and push air out steadily with a soft "haaa" huff—like fogging up a mirror.',
+              'Repeat 2 gentle huffs, then rest with 30 seconds of calm Pursed-Lip Breathing before deciding if another cycle is needed.',
+            ],
+            lungOrPerformanceImpact:
+              'Mobilizes loosened mucus from mid-airways gently without the bronchial collapse and throat irritation caused by harsh, explosive coughing.',
+            tailoredNote:
+              'Always perform after sipping warm water or plain steam inhalation, and stop immediately if airways feel tight or wheezy.',
+            pacerConfig: { inhaleSec: 3, holdSec: 1, exhaleSec: 4 },
+          },
+          {
+            id: 'smoker-bhramari-nadi',
+            name: 'Bhramari & Nadi Shodhana Pranayama',
+            categoryGroup: 'Soothing Pranayama',
+            sessionType: 'Pranayama',
+            durationMinutes: 6,
+            durationLabel: '6 min (5 Bhramari + 5 Nadi Shodhana)',
+            howToSteps: [
+              'Begin with 5 slow Bhramari breaths: inhale 4s through the nose, then exhale 6s with a soft, steady low humming sound.',
+              'Transition to 5 balanced Nadi Shodhana rounds: inhale left nostril (4s), switch softly, exhale right nostril (6s), then inhale right and exhale left.',
+              'Keep breath velocity whisper-quiet so air warms and filters fully through the nasal passages.',
+              'Finish with 30 seconds of quiet sitting and sip warm water afterward.',
+            ],
+            lungOrPerformanceImpact:
+              'Increases nasal nitric oxide to soothe smoke-irritated throat/sinuses and lowers sympathetic stress cravings without forceful breathing.',
+            tailoredNote:
+              'Strictly avoid forceful rapid practices like Kapalabhati or Bhastrika and avoid intense outdoor cardio while combined particulate load is high.',
+            pacerConfig: { inhaleSec: 4, holdSec: 0, exhaleSec: 6 },
+          },
+        ],
+      }
+    : null;
+
+  const weather = aqiData.weather ?? buildFallbackWeatherSnapshot(pm25);
+  const fogHazard = calculateFogHazard({
+    temperatureC: weather.temperatureC,
+    dewPointC: weather.dewPointC,
+    relativeHumidityPct: weather.relativeHumidityPct,
+    windSpeedKmh: weather.windSpeedKmh,
+    pm25,
+    commute: profile.commute,
+    reportedVisibilityMeters: weather.reportedVisibilityMeters,
+  });
+
+  const roadSafetyAdvice = {
+    visibilityMeters: fogHazard.estimatedVisibilityMeters,
+    fogSeverity: fogHazard.fogSeverity,
+    safeSpeedCapKmh: fogHazard.safeSpeedCapKmh,
+    potholeBrakingRisk: fogHazard.potholeBrakingRisk,
+    commuteDirective: fogHazard.summary,
+    hazardChecklist: fogHazard.commuterTips,
+  };
+
   return {
     generatedAt: new Date().toISOString(),
     citySummary,
@@ -600,9 +914,16 @@ export function buildLocalSmogPlan(
     communityAlert,
     healthYoga,
     trainYoga,
+    smokerRecovery,
+    roadSafetyAdvice,
   };
 }
 
+/**
+ * Generates a clean, punctuation-friendly multilingual TTS voice briefing starting
+ * with the required `"Hello sir, here is your personalized smog action plan for [City]."`
+ * opening across English, Hindi, Hinglish, Spanish, French, and German.
+ */
 export function buildLocalVoiceBriefing(
   aqiData: LiveAqiData,
   plan: SmogActionPlan,
@@ -614,12 +935,24 @@ export function buildLocalVoiceBriefing(
   const windowLabel = aqiData.safeWindow.windowLabel;
   const topHack = plan.indoorHacks?.[0]?.title || 'wet-mopping and sealing door gaps';
   const opening = `Hello sir, here is your personalized smog action plan for ${cityName}.`;
+  const smokerNoteEn =
+    plan.smokerRecovery && plan.smokerRecovery.cigarettesCount > 0
+      ? ` Because ${plan.smokerRecovery.cigarettesCount} ${
+          plan.smokerRecovery.cigarettesCount === 1 ? 'cigarette was' : 'cigarettes were'
+        } logged today, start your immediate recovery with ${
+          plan.smokerRecovery.immediateInitials?.[0]?.title || 'warm steam inhalation and hydration'
+        } and avoid outdoor cardio for at least two hours.`
+      : '';
 
   switch (language) {
     case 'Hindi (हिन्दी)':
       return `${opening} अभी यहाँ का यूएस ए क्यू आई ${aqi} है और पी एम 2.5 का स्तर ${pm25} माइक्रोग्राम प्रति घन मीटर है। बाहर जाने के लिए सबसे सुरक्षित समय ${windowLabel} के बीच है। घर के अंदर की हवा साफ रखने के लिए ${topHack} अपनाएं। ${plan.headlineAdvisory}`;
     case 'Hinglish':
-      return `${opening} Abhi ${cityName} ka live US AQI ${aqi} hai aur PM 2.5 level ${pm25} micrograms per cubic meter hai. Bahar jaane ke liye sabse safe outdoor window ${windowLabel} hai. Ghar ke andar hawa clean rakhne ke liye ${topHack} follow karein, aur bahar nikalte waqt N95 mask zaroor pehnein.`;
+      return `${opening} Abhi ${cityName} ka live US AQI ${aqi} hai aur PM 2.5 level ${pm25} micrograms per cubic meter hai. Bahar jaane ke liye sabse safe outdoor window ${windowLabel} hai. Ghar ke andar hawa clean rakhne ke liye ${topHack} follow karein, aur bahar nikalte waqt N95 mask zaroor pehnein.${
+        plan.smokerRecovery && plan.smokerRecovery.cigarettesCount > 0
+          ? ` Aaj ${plan.smokerRecovery.cigarettesCount} cigarette ke baad pehle 60 minute mein warm steam aur warm water hydration lein aur 2 ghante tak bahar heavy exercise avoid karein.`
+          : ''
+      }`;
     case 'Spanish':
       return `${opening} En este momento el índice de calidad del aire es ${aqi}, con PM 2.5 en ${pm25} microgramos por metro cúbico. La ventana más segura al aire libre es de ${windowLabel}. Para el aire interior, priorice ${topHack} y limite la exposición de las personas sensibles.`;
     case 'French':
@@ -628,6 +961,6 @@ export function buildLocalVoiceBriefing(
       return `${opening} Der aktuelle Luftqualitätsindex liegt bei ${aqi}, mit einem PM 2.5 Wert von ${pm25} Mikrogramm pro Kubikmeter. Das sicherste Zeitfenster im Freien ist ${windowLabel}. Für saubere Raumluft empfehlen wir ${topHack} und bei Bedarf eine N95 Maske im Freien.`;
     case 'English (India)':
     default:
-      return `${opening} Right now, the live US AQI is ${aqi}, with PM 2.5 at ${pm25} micrograms per cubic meter. Your safest outdoor window today is ${windowLabel}. For cleaner indoor air, start with ${topHack}. Priority recommendation: ${plan.headlineAdvisory}`;
+      return `${opening} Right now, the live US AQI is ${aqi}, with PM 2.5 at ${pm25} micrograms per cubic meter. Your safest outdoor window today is ${windowLabel}. For cleaner indoor air, start with ${topHack}.${smokerNoteEn} Priority recommendation: ${plan.headlineAdvisory}`;
   }
 }

@@ -1,6 +1,7 @@
 import { KeyboardEvent, useEffect, useId, useRef, useState } from 'react';
 import { Loader2, MapPin, Search } from 'lucide-react';
 import type { LocationSelection } from '../types/vayu';
+import { sanitizeCityQuery } from '../utils/requestValidation';
 
 interface CuratedEntry extends LocationSelection {
   keywords?: string[];
@@ -484,7 +485,7 @@ export function LocationSearchInput({
       return;
     }
 
-    const trimmed = value.trim();
+    const trimmed = sanitizeCityQuery(value, 120);
     if (trimmed.length === 0) {
       setSuggestions([]);
       setIsOpen(false);
@@ -635,7 +636,9 @@ export function LocationSearchInput({
       <input
         id="city-search-input"
         type="text"
+        maxLength={120}
         role="combobox"
+        aria-label="Search city or locality for live air quality"
         aria-autocomplete="list"
         aria-expanded={isOpen}
         aria-controls={listboxId}
@@ -650,7 +653,7 @@ export function LocationSearchInput({
         }}
         onKeyDown={handleKeyDown}
         placeholder="Enter city or locality (e.g., Kanpur, Uttar Pradesh)"
-        className="w-full h-11 pl-10 pr-9 bg-slate-950/90 border border-slate-700 rounded-lg text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/30 transition-colors"
+        className="w-full h-11 pl-10 pr-9 bg-slate-950/90 border border-slate-700 rounded-lg text-sm text-white placeholder:text-slate-400 focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/30 transition-colors"
       />
       {isSearching && (
         <Loader2
