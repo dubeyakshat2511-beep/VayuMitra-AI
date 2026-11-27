@@ -7,15 +7,26 @@ import type {
 } from '../types/vayu';
 import { YogaSessionCard } from './YogaSessionCard';
 
-interface TrainYogaTabProps {
+/** Props accepted by {@link TrainYogaTab}. */
+export interface TrainYogaTabProps {
+  /** High-AQI indoor athletic yoga and breath-conditioning module. */
   module: TrainYogaModule;
+  /** Live US AQI reading determining high-smog indoor conditioning advisories. */
   usAqi: number;
+  /** Live ambient PM2.5 reading (µg/m³). */
   pm25: number;
+  /** Current household & lifestyle profile. */
   profile: FamilyProfile;
+  /** Optional smoker recovery protocol when daily cigarettes > 0. */
   smokerRecovery?: SmokerRecoveryModule | null;
+  /** Launches the visual Breathing Pacer modal for a chosen drill. */
   onStartTimer: (session: YogaSession) => void;
 }
 
+/**
+ * Displays indoor dynamic flow, breath-capacity drills, and thoracic mobility
+ * sessions tailored for high-AQI days when outdoor running is unsafe.
+ */
 export function TrainYogaTab({
   module,
   usAqi,

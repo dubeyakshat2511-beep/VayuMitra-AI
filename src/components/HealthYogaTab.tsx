@@ -7,15 +7,26 @@ import type {
 } from '../types/vayu';
 import { YogaSessionCard } from './YogaSessionCard';
 
-interface HealthYogaTabProps {
+/** Props accepted by {@link HealthYogaTab}. */
+export interface HealthYogaTabProps {
+  /** Tailored indoor lung-care yoga and pranayama module. */
   module: HealthYogaModule;
+  /** Live US AQI used to display high-AQI breathwork precautions. */
   usAqi: number;
+  /** Live ambient PM2.5 reading (µg/m³). */
   pm25: number;
+  /** Current household & lifestyle profile. */
   profile: FamilyProfile;
+  /** Optional smoker recovery module when cigarettes were logged today. */
   smokerRecovery?: SmokerRecoveryModule | null;
+  /** Launches the visual Breathing Pacer modal for a chosen session. */
   onStartTimer: (session: YogaSession) => void;
 }
 
+/**
+ * Displays indoor pranayama and chest-opening restorative yoga sessions
+ * calibrated to live AQI and household respiratory sensitivity.
+ */
 export function HealthYogaTab({
   module,
   usAqi,

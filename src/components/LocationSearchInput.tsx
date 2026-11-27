@@ -447,12 +447,20 @@ function formatSubtitle(item: LocationSelection): string {
   return parts.join(', ');
 }
 
-interface LocationSearchInputProps {
+/** Props accepted by {@link LocationSearchInput}. */
+export interface LocationSearchInputProps {
+  /** Controlled text value for the city or locality combobox. */
   value: string;
+  /** Callback fired as the user edits the search input. */
   onChange: (nextVal: string) => void;
+  /** Callback fired when the user picks an autocomplete suggestion. */
   onSelectLocation: (loc: LocationSelection) => void;
 }
 
+/**
+ * Accessible WAI-ARIA combobox providing 250ms debounced Open-Meteo geocoding
+ * autocomplete merged with curated Indian urban landmarks.
+ */
 export function LocationSearchInput({
   value,
   onChange,

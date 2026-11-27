@@ -431,6 +431,7 @@ export function VoiceAssistantBar({
             type="button"
             role="switch"
             aria-checked={isEnabled}
+            aria-label="Enable Voice Assistant read-aloud"
             onClick={() => setIsEnabled((prev) => !prev)}
             className="inline-flex items-center gap-2.5 text-xs font-medium text-slate-200 hover:text-white cursor-pointer whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 rounded-md px-1 py-0.5"
           >
@@ -559,6 +560,7 @@ export function VoiceAssistantBar({
             {activeScript && (
               <button
                 type="button"
+                aria-expanded={showTranscript}
                 onClick={() => setShowTranscript((prev) => !prev)}
                 className="inline-flex items-center gap-1 text-emerald-400 hover:text-emerald-300 font-medium cursor-pointer"
               >
@@ -571,6 +573,16 @@ export function VoiceAssistantBar({
               </button>
             )}
           </div>
+
+          <p className="sr-only" role="status" aria-live="polite">
+            {playbackState === 'loading'
+              ? 'Preparing voice briefing script.'
+              : playbackState === 'speaking'
+                ? `Reading smog action plan aloud in ${language}.`
+                : playbackState === 'paused'
+                  ? 'Voice briefing paused.'
+                  : ''}
+          </p>
 
           {error && (
             <p role="alert" className="text-xs text-red-300">

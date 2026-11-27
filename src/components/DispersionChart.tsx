@@ -2,12 +2,20 @@ import { useState } from 'react';
 import type { HourlyAqiPoint, SafeOutdoorWindow } from '../types/vayu';
 import { getAqiCategory } from '../utils/aqi';
 
-interface DispersionChartProps {
+/** Props accepted by {@link DispersionChart}. */
+export interface DispersionChartProps {
+  /** Next-24-hour hourly AQI & PM2.5 forecast points. */
   hourly: HourlyAqiPoint[];
+  /** Computed safest daytime dispersion window highlighted on the curve. */
   safeWindow: SafeOutdoorWindow;
+  /** Resolved city/locality name displayed in chart accessibility metadata. */
   cityName: string;
 }
 
+/**
+ * Interactive SVG 24-hour US AQI dispersion curve highlighting the lowest-smog
+ * daytime outdoor window with hover inspection readouts.
+ */
 export function DispersionChart({ hourly, safeWindow, cityName }: DispersionChartProps) {
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 

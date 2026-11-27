@@ -1,8 +1,11 @@
 import { AlertTriangle, ShieldAlert, ShieldCheck, Wind } from 'lucide-react';
 import type { RoutineBlock, RoutineRiskLevel } from '../types/vayu';
 
-interface RoutineTabProps {
+/** Props accepted by {@link RoutineTab}. */
+export interface RoutineTabProps {
+  /** Chronological Morning, Afternoon, Evening, and Night routine blocks. */
   routine: RoutineBlock[];
+  /** Computed safest daytime outdoor window label for display in the header. */
   safeWindowLabel: string;
 }
 
@@ -32,6 +35,10 @@ function getRiskPresentation(level: RoutineRiskLevel) {
   }
 }
 
+/**
+ * Renders the 4-period inversion-aware ventilation, mask, and activity schedule
+ * aligned with today's safest afternoon dispersion window.
+ */
 export function RoutineTab({ routine, safeWindowLabel }: RoutineTabProps) {
   return (
     <div className="space-y-6">

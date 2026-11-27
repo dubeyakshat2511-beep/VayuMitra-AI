@@ -1197,17 +1197,33 @@ const voiceBriefingSchema = {
 
 app.post('/api/voice-briefing', async (req: Request, res: Response) => {
   const apiKey = process.env.GEMINI_API_KEY;
-  const { aqiData, plan, language, isRetry } = req.body as {
-    aqiData?: LiveAqiData;
-    plan?: SmogActionPlan;
+  const { aqiData: rawAqiData, plan: rawPlan, language, isRetry } = req.body as {
+    aqiData?: unknown;
+    plan?: unknown;
     language?: string;
     isRetry?: boolean;
   };
 
-  if (!aqiData || !plan) {
-    res.status(400).json({ error: 'Missing live AQI telemetry or generated action plan.' });
+  if (
+    !isValidLiveAqiPayload(rawAqiData) ||
+    !rawPlan ||
+    typeof rawPlan !== 'object' ||
+    !Array.isArray((rawPlan as Partial<SmogActionPlan>).dailyRoutine)
+  ) {
+    res.status(400).json({ error: 'Missing or invalid live AQI telemetry or generated action plan.' });
     return;
   }
+
+  const aqiData: LiveAqiData = {
+    ...rawAqiData,
+    displayName: sanitizeTextInput(rawAqiData.displayName, 120) || 'your city',
+    query: sanitizeTextInput(rawAqiData.query, 120) || 'your city',
+  };
+  const parsedPlan = rawPlan as SmogActionPlan;
+  const plan: SmogActionPlan = {
+    ...parsedPlan,
+    headlineAdvisory: sanitizeTextInput(parsedPlan.headlineAdvisory, 400),
+  };
 
   const targetLanguage: VoiceLanguage = ALLOWED_VOICE_LANGUAGES.includes(language as VoiceLanguage)
     ? (language as VoiceLanguage)
@@ -1670,11 +1686,21 @@ function attachLiveVoiceWebSocket(httpServer: http.Server) {
       }
 
       if (msg.type === 'setup') {
+        const sanitizedAqi: LiveAqiData | null = isValidLiveAqiPayload(msg.aqiData)
+          ? {
+              ...msg.aqiData,
+              displayName: sanitizeTextInput(msg.aqiData.displayName, 120) || 'Your City',
+              query: sanitizeTextInput(msg.aqiData.query, 120) || 'Your City',
+            }
+          : null;
+        const sanitizedProfile = sanitizeFamilyProfile(msg.profile);
+        const sanitizedHeadline = sanitizeTextInput(msg.planHeadline, 300) || null;
+
         void connectSession({
-          voiceName: msg.voiceName,
-          aqiData: msg.aqiData,
-          profile: msg.profile,
-          planHeadline: msg.planHeadline,
+          voiceName: typeof msg.voiceName === 'string' ? msg.voiceName : undefined,
+          aqiData: sanitizedAqi,
+          profile: sanitizedProfile,
+          planHeadline: sanitizedHeadline,
         }).catch(() => {});
         return;
       }
@@ -1697,7 +1723,12 @@ function attachLiveVoiceWebSocket(httpServer: http.Server) {
         void connectSession({}).catch(() => {});
       }
 
-      if (msg.type === 'audio' && typeof msg.data === 'string' && msg.data.length > 0) {
+      if (
+        msg.type === 'audio' &&
+        typeof msg.data === 'string' &&
+        msg.data.length > 0 &&
+        msg.data.length <= 128 * 1024
+      ) {
         const audioData = msg.data;
         sessionPromise
           ?.then((session) => {
@@ -1708,8 +1739,9 @@ function attachLiveVoiceWebSocket(httpServer: http.Server) {
             }
           })
           .catch(() => {});
-      } else if (msg.type === 'text' && typeof msg.text === 'string' && msg.text.trim()) {
-        const textPrompt = msg.text.trim();
+      } else if (msg.type === 'text' && typeof msg.text === 'string') {
+        const textPrompt = sanitizeHazardReportText(msg.text, 500);
+        if (!textPrompt) return;
         sessionPromise
           ?.then((session) => {
             if (!closed) {

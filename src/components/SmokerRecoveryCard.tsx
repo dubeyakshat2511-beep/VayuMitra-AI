@@ -3,12 +3,20 @@ import { ChevronDown, ChevronUp, Cigarette, Clock, ShieldAlert, Wind } from 'luc
 import type { SmokerRecoveryModule, YogaSession } from '../types/vayu';
 import { YogaSessionCard } from './YogaSessionCard';
 
-interface SmokerRecoveryCardProps {
+/** Props accepted by {@link SmokerRecoveryCard}. */
+export interface SmokerRecoveryCardProps {
+  /** Conditional smoker lung-recovery protocol generated when cigarettes > 0. */
   recovery: SmokerRecoveryModule;
+  /** Live ambient US AQI reading used for severe combined burden alerts. */
   usAqi: number;
+  /** Launches the visual Breathing Pacer modal for a lung-clearing exercise. */
   onStartTimer: (session: YogaSession) => void;
 }
 
+/**
+ * Expandable smoker lung-recovery card displaying first-60-minute clearance
+ * steps, cardio exertion warnings, and guided indoor lung-clearing exercises.
+ */
 export function SmokerRecoveryCard({
   recovery,
   usAqi,

@@ -6,7 +6,10 @@
  * - Model audio output from Gemini Live: 24 kHz, mono, 16-bit signed PCM little-endian
  */
 
+/** Required microphone PCM input sample rate (Hz) for Gemini Live audio streams. */
 export const LIVE_INPUT_SAMPLE_RATE = 16000;
+
+/** Output PCM sample rate (Hz) emitted by Gemini Live audio responses. */
 export const LIVE_OUTPUT_SAMPLE_RATE = 24000;
 
 /**

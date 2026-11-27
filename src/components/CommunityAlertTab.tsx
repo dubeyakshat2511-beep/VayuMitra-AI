@@ -2,12 +2,20 @@ import { useState } from 'react';
 import { Check, Copy, MessageSquareShare } from 'lucide-react';
 import type { CommunityAlert } from '../types/vayu';
 
-interface CommunityAlertTabProps {
+/** Props accepted by {@link CommunityAlertTab}. */
+export interface CommunityAlertTabProps {
+  /** Ready-to-share 4-line residential society notice payload. */
   alert: CommunityAlert;
+  /** Resolved display name of the city or locality. */
   cityName: string;
+  /** Live US AQI reading for contextual display. */
   usAqi: number;
 }
 
+/**
+ * Renders the copyable 4-line RWA / WhatsApp society alert notice with
+ * one-click clipboard copy and visual confirmation feedback.
+ */
 export function CommunityAlertTab({ alert, cityName, usAqi }: CommunityAlertTabProps) {
   const [copied, setCopied] = useState(false);
 

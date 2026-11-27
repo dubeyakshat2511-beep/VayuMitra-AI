@@ -28,12 +28,20 @@ function CameraController({ lat, lng, zoom }: CameraControllerProps) {
   return null;
 }
 
-interface LocationMiniMapProps {
+/** Props accepted by {@link LocationMiniMap}. */
+export interface LocationMiniMapProps {
+  /** Selected city, locality, or landmark coordinate to preview. */
   location: LocationSelection;
+  /** Optional handler invoked when the user clicks the map to adjust pin coordinates. */
   onPinCoordinateClick?: (lat: number, lng: number) => void;
+  /** Closes the collapsible coordinate mini-map drawer. */
   onClose: () => void;
 }
 
+/**
+ * Collapsible interactive Google Maps mini-map preview allowing users to verify
+ * or adjust exact latitude/longitude coordinates for local AQI telemetry.
+ */
 export function LocationMiniMap({
   location,
   onPinCoordinateClick,

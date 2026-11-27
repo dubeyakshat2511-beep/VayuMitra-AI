@@ -1,10 +1,17 @@
 import type { IndoorHack } from '../types/vayu';
 
-interface IndoorHacksTabProps {
+/** Props accepted by {@link IndoorHacksTab}. */
+export interface IndoorHacksTabProps {
+  /** Ordered list of budget-friendly indoor particle-reduction measures. */
   hacks: IndoorHack[];
+  /** User's current home filtration setup label. */
   homeSetup: string;
 }
 
+/**
+ * Displays targeted indoor air quality improvement measures with estimated
+ * PM2.5 reduction percentages, cost estimates, and execution steps.
+ */
 export function IndoorHacksTab({ hacks, homeSetup }: IndoorHacksTabProps) {
   return (
     <div className="space-y-6">

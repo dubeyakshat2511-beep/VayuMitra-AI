@@ -25,6 +25,7 @@ import {
   type BrowserSpeechRecognitionInstance,
   type VoiceTransportMode,
 } from '../utils/voiceFallback';
+import { sanitizeHazardReportText } from '../utils/requestValidation';
 import { requestVoiceChatReply } from '../services/vayuApiService';
 
 const VOICE_OPTIONS = [
@@ -729,7 +730,7 @@ export function LiveVoiceAssistantModal({
   };
 
   const sendTextTurn = (promptText: string) => {
-    const trimmed = promptText.trim();
+    const trimmed = sanitizeHazardReportText(promptText, 500);
     if (!trimmed) return;
 
     if (
@@ -786,8 +787,12 @@ export function LiveVoiceAssistantModal({
                   VayuMitra Live Voice Conversation
                 </h2>
                 {isConnected && (
-                  <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-700/70">
-                    {transportMode === 'gemini-live' ? 'Live Audio' : 'Browser Voice'}
+                  <span
+                    role="status"
+                    aria-live="polite"
+                    className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-700/70"
+                  >
+                    {transportMode === 'gemini-live' ? 'Live Audio' : 'Browser Voice Mode'}
                   </span>
                 )}
               </div>
@@ -856,7 +861,7 @@ export function LiveVoiceAssistantModal({
               </div>
             </div>
 
-            <div className="space-y-0.5">
+            <div className="space-y-0.5" aria-live="polite">
               <p className="text-sm font-bold text-slate-900 dark:text-slate-100">
                 {status === 'idle' && 'Ready for hands-free voice advice'}
                 {status === 'connecting' && 'Connecting microphone & live audio...'}
@@ -880,6 +885,7 @@ export function LiveVoiceAssistantModal({
               <button
                 type="button"
                 onClick={startConversation}
+                aria-label="Start live voice conversation"
                 className="h-10 px-4 inline-flex items-center gap-2 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 dark:hover:bg-emerald-500 rounded-lg transition-colors cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
               >
                 <Mic className="w-4 h-4 shrink-0" aria-hidden="true" />
@@ -892,6 +898,7 @@ export function LiveVoiceAssistantModal({
                   onClick={handleToggleMute}
                   disabled={status === 'connecting'}
                   aria-pressed={isMuted}
+                  aria-label={isMuted ? 'Unmute microphone' : 'Mute microphone'}
                   className={`h-10 px-3.5 inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
                     isMuted
                       ? 'bg-amber-100 dark:bg-amber-950/70 border-amber-300 dark:border-amber-700 text-amber-900 dark:text-amber-200'
@@ -914,6 +921,7 @@ export function LiveVoiceAssistantModal({
                 <button
                   type="button"
                   onClick={() => teardownSession(true)}
+                  aria-label="End voice conversation"
                   className="h-10 px-3.5 inline-flex items-center gap-1.5 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
                 >
                   <PhoneOff className="w-4 h-4 shrink-0" aria-hidden="true" />
@@ -938,6 +946,7 @@ export function LiveVoiceAssistantModal({
                     key={v.name}
                     type="button"
                     aria-pressed={active}
+                    aria-label={`Select ${v.name} voice (${v.tone})`}
                     onClick={() => setSelectedVoice(v.name)}
                     title={v.tone}
                     className={`px-2.5 py-1 text-xs font-medium rounded-md border transition-colors cursor-pointer ${
@@ -958,6 +967,7 @@ export function LiveVoiceAssistantModal({
         {notice && (
           <div
             role="status"
+            aria-live="polite"
             className="mx-5 mt-4 p-3 rounded-lg bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 text-xs flex items-start gap-2.5"
           >
             <Info className="w-4 h-4 text-emerald-600 dark:text-emerald-400 mt-0.5 shrink-0" aria-hidden="true" />
@@ -1020,6 +1030,7 @@ export function LiveVoiceAssistantModal({
           <input
             id="live-voice-text-input"
             type="text"
+            maxLength={500}
             value={textInput}
             onChange={(e) => setTextInput(e.target.value)}
             placeholder="Speak aloud or type a question for a spoken reply..."

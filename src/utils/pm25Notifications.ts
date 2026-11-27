@@ -21,13 +21,16 @@ export const PM25_THRESHOLD_PRESETS = [75, 100, 150, 200] as const;
  */
 export const PM25_ALERT_STORAGE_KEY = 'vayumitra_pm25_alert_prefs';
 
+/** Normalized Browser Notification API permission state. */
 export type NotificationPermissionState = 'default' | 'granted' | 'denied' | 'unsupported';
 
+/** Persisted user preferences for PM2.5 threshold monitoring. */
 export interface Pm25AlertPrefs {
   enabled: boolean;
   threshold: number;
 }
 
+/** Result of evaluating live PM2.5 telemetry against the user's threshold. */
 export interface Pm25AlertEvaluation {
   isExceeded: boolean;
   pm25: number;
@@ -37,23 +40,27 @@ export interface Pm25AlertEvaluation {
   dedupeKey: string;
 }
 
+/** Title, body, and deduplication tag used when constructing a browser notification. */
 export interface Pm25NotificationPayload {
   title: string;
   body: string;
   tag: string;
 }
 
+/** Minimal `Storage` interface supporting offline dependency injection in tests. */
 export interface StorageLike {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
 }
 
+/** Minimal `Notification` constructor interface supporting offline tests. */
 export interface NotificationConstructorLike {
   readonly permission: NotificationPermission;
   requestPermission?: () => Promise<NotificationPermission>;
   new (title: string, options?: NotificationOptions): unknown;
 }
 
+/** Outcome of attempting to dispatch a desktop browser PM2.5 notification. */
 export interface DispatchNotificationResult {
   dispatched: boolean;
   payload: Pm25NotificationPayload;

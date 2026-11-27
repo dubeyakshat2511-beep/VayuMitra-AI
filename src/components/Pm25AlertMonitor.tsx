@@ -19,10 +19,16 @@ import {
   type NotificationPermissionState,
 } from '../utils/pm25Notifications';
 
-interface Pm25AlertMonitorProps {
+/** Props accepted by {@link Pm25AlertMonitor}. */
+export interface Pm25AlertMonitorProps {
+  /** Live air quality telemetry evaluated against the user's PM2.5 alert threshold. */
   aqiData: LiveAqiData | null;
 }
 
+/**
+ * Interactive PM2.5 threshold monitor providing quick-select limits, Browser
+ * Notification API opt-in, and dismissible high-particulate warning banners.
+ */
 export function Pm25AlertMonitor({ aqiData }: Pm25AlertMonitorProps) {
   const [prefs, setPrefs] = useState(() => loadPm25AlertPrefs());
   const [permission, setPermission] = useState<NotificationPermissionState>(() =>
@@ -190,7 +196,7 @@ export function Pm25AlertMonitor({ aqiData }: Pm25AlertMonitorProps) {
               )}
             </div>
             {lastDesktopStatus && (
-              <p className="text-[11px] text-slate-600 dark:text-slate-400 mt-0.5">
+              <p role="status" aria-live="polite" className="text-[11px] text-slate-600 dark:text-slate-400 mt-0.5">
                 {lastDesktopStatus}
               </p>
             )}
@@ -211,6 +217,7 @@ export function Pm25AlertMonitor({ aqiData }: Pm25AlertMonitorProps) {
                   key={preset}
                   type="button"
                   aria-pressed={active}
+                  aria-label={`Set PM2.5 alert threshold to ${preset} micrograms per cubic meter`}
                   onClick={() => handleThresholdSelect(preset)}
                   className={`px-2 py-1 text-[11px] font-mono font-semibold rounded-md transition-colors cursor-pointer whitespace-nowrap ${
                     active

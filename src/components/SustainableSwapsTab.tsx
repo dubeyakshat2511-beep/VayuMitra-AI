@@ -1,12 +1,20 @@
 import { Check, HeartPulse, Leaf } from 'lucide-react';
 import type { SustainableSwap } from '../types/vayu';
 
-interface SustainableSwapsTabProps {
+/** Props accepted by {@link SustainableSwapsTab}. */
+export interface SustainableSwapsTabProps {
+  /** Commute, cooking, and waste emission-reduction swaps tailored to the profile. */
   swaps: SustainableSwap[];
+  /** Map of swap IDs currently checked off by the user. */
   checkedIds: Record<string, boolean>;
+  /** Toggles the committed status of a sustainable swap item by ID. */
   onToggleSwap: (id: string) => void;
 }
 
+/**
+ * Interactive checklist and live Weekly Impact Meter calculating weekly CO2 and
+ * PM2.5/NOx emissions prevented from committed household habit swaps.
+ */
 export function SustainableSwapsTab({
   swaps,
   checkedIds,

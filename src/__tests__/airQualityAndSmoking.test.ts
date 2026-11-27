@@ -211,29 +211,32 @@ describe('buildLocalSmogPlan — fallback smog & smoker-recovery plan generation
 
     const plan = buildLocalSmogPlan(aqi, profile);
 
-    expect(plan.smokerRecovery).not.toBeNull();
-    expect(plan.smokerRecovery?.cigarettesCount).toBe(5);
-    expect(plan.smokerRecovery?.smokingEquivalentPm25).toBe(110);
-    expect(plan.smokerRecovery?.combinedPm25Burden).toBe(230);
+    const recovery = plan.smokerRecovery;
+    expect(recovery).not.toBeNull();
+    if (!recovery) return;
+
+    expect(recovery.cigarettesCount).toBe(5);
+    expect(recovery.smokingEquivalentPm25).toBe(110);
+    expect(recovery.combinedPm25Burden).toBe(230);
 
     // 4 immediate first-60-minute initials
-    expect(plan.smokerRecovery?.immediateInitials).toHaveLength(4);
-    const initialTitles = plan.smokerRecovery!.immediateInitials.map((i) => i.title).join(' | ');
+    expect(recovery.immediateInitials).toHaveLength(4);
+    const initialTitles = recovery.immediateInitials.map((i) => i.title).join(' | ');
     expect(initialTitles).toMatch(/Steam/i);
     expect(initialTitles).toMatch(/Vitamin-C|Hydration/i);
     expect(initialTitles).toMatch(/2-Hour|Exertion/i);
     expect(initialTitles).toMatch(/Filtered|Indoor/i);
 
     // 4 targeted lung-clearing exercises
-    expect(plan.smokerRecovery?.lungClearingExercises).toHaveLength(4);
-    const exerciseNames = plan.smokerRecovery!.lungClearingExercises.map((e) => e.name).join(' | ');
+    expect(recovery.lungClearingExercises).toHaveLength(4);
+    const exerciseNames = recovery.lungClearingExercises.map((e) => e.name).join(' | ');
     expect(exerciseNames).toMatch(/Pursed-Lip/i);
     expect(exerciseNames).toMatch(/Diaphragmatic/i);
     expect(exerciseNames).toMatch(/Huff Coughing/i);
     expect(exerciseNames).toMatch(/Bhramari|Nadi Shodhana/i);
 
     // Cardio warning and Train/Health integration
-    expect(plan.smokerRecovery?.cardioWarning).toMatch(/outdoor cardio|2 hours/i);
+    expect(recovery.cardioWarning).toMatch(/outdoor cardio|2 hours/i);
     expect(plan.trainYoga.smogConditioningNote).toMatch(/2 hours|smoking/i);
     expect(plan.headlineAdvisory).toMatch(/60-minute/i);
   });

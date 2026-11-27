@@ -1,3 +1,4 @@
+/** Supported household vulnerability and lifestyle profile tags. */
 export type HouseholdMemberOption =
   | 'Individual / Solo'
   | 'Healthy Adults'
@@ -6,6 +7,7 @@ export type HouseholdMemberOption =
   | 'Asthma/Respiratory Sensitivity'
   | 'Outdoor Runner/Athlete';
 
+/** Supported primary daily commute modes used for exposure and fog-speed modeling. */
 export type CommuteOption =
   | 'Two-Wheeler (Bike/Scooter)'
   | 'Petrol/Diesel Car'
@@ -13,13 +15,16 @@ export type CommuteOption =
   | 'Auto/E-Rickshaw'
   | 'Work From Home';
 
+/** Supported indoor air filtration hardware configurations. */
 export type HomeAirSetupOption =
   | 'No Air Purifier (Budget/Natural hacks needed)'
   | '1 HEPA Air Purifier'
   | 'Central Filtration';
 
+/** Supported languages for community RWA WhatsApp alerts. */
 export type LanguageOption = 'English' | 'Hinglish/Hindi';
 
+/** Complete household vulnerability, commute, indoor air, language, and smoking profile. */
 export interface FamilyProfile {
   members: HouseholdMemberOption[];
   commute: CommuteOption;
@@ -28,6 +33,7 @@ export interface FamilyProfile {
   cigarettesSmokedToday: number;
 }
 
+/** Resolved city, locality, or pinned landmark coordinate selection. */
 export interface LocationSelection {
   name: string;
   displayName: string;
@@ -38,6 +44,7 @@ export interface LocationSelection {
   isLandmark?: boolean;
 }
 
+/** Single hourly air quality data point in the 24-hour dispersion forecast. */
 export interface HourlyAqiPoint {
   isoTime: string;
   hourLabel: string;
@@ -47,6 +54,7 @@ export interface HourlyAqiPoint {
   pm10: number;
 }
 
+/** Computed lowest-particulate 2-hour daytime outdoor window from the 24-hour forecast. */
 export interface SafeOutdoorWindow {
   windowLabel: string;
   avgAqi: number;
@@ -68,6 +76,7 @@ export interface LiveWeatherSnapshot {
   reportedVisibilityMeters: number | null;
 }
 
+/** Consolidated live air quality, weather, and 24-hour forecast payload returned by `/api/aqi`. */
 export interface LiveAqiData {
   query: string;
   displayName: string;
@@ -90,8 +99,10 @@ export interface LiveAqiData {
   hourly: HourlyAqiPoint[];
 }
 
+/** Qualitative exposure risk severity for a time-blocked daily routine period. */
 export type RoutineRiskLevel = 'Low' | 'Moderate' | 'High' | 'Severe';
 
+/** Single chronological block in the inversion-aware daily smog routine. */
 export interface RoutineBlock {
   period: 'Morning' | 'Afternoon' | 'Evening' | 'Night';
   timeRange: string;
@@ -102,6 +113,7 @@ export interface RoutineBlock {
   familyActions: string[];
 }
 
+/** Budget-friendly indoor particle reduction measure tailored to home air setup. */
 export interface IndoorHack {
   title: string;
   estimatedPm25ReductionPct: number;
@@ -111,6 +123,7 @@ export interface IndoorHack {
   whyItWorks: string;
 }
 
+/** Actionable habit swap reducing weekly CO2 and PM2.5/NOx emissions. */
 export interface SustainableSwap {
   id: string;
   category: 'Commute' | 'Cooking' | 'Waste';
@@ -123,6 +136,7 @@ export interface SustainableSwap {
   practicalTip: string;
 }
 
+/** Ready-to-share 4-line residential society (RWA) WhatsApp smog notice. */
 export interface CommunityAlert {
   subject: string;
   lines: string[];
@@ -130,14 +144,17 @@ export interface CommunityAlert {
   callToAction: string;
 }
 
+/** Classification of an indoor yoga or pranayama practice session. */
 export type YogaSessionType = 'Pranayama' | 'Restorative' | 'Dynamic Flow';
 
+/** Inhale, hold, and exhale cadence (in seconds) for the visual Breathing Pacer modal. */
 export interface BreathingPacerConfig {
   inhaleSec: number;
   holdSec: number;
   exhaleSec: number;
 }
 
+/** Structured indoor yoga, breathwork, or lung-clearing exercise session. */
 export interface YogaSession {
   id: string;
   name: string;
@@ -151,18 +168,21 @@ export interface YogaSession {
   pacerConfig: BreathingPacerConfig;
 }
 
+/** Indoor lung-care yoga and pranayama module tailored to live AQI. */
 export interface HealthYogaModule {
   summary: string;
   aqiSafetyGuidance: string;
   sessions: YogaSession[];
 }
 
+/** High-AQI indoor athletic yoga and breath-conditioning module. */
 export interface TrainYogaModule {
   summary: string;
   smogConditioningNote: string;
   sessions: YogaSession[];
 }
 
+/** Single immediate first-60-minute recovery action for users who logged cigarettes today. */
 export interface SmokerInitialStep {
   id: string;
   title: string;
@@ -171,6 +191,7 @@ export interface SmokerInitialStep {
   physiologicalReason: string;
 }
 
+/** Conditional smoker lung-recovery protocol generated when daily cigarette count > 0. */
 export interface SmokerRecoveryModule {
   cigarettesCount: number;
   smokingEquivalentPm25: number;
@@ -191,6 +212,7 @@ export interface RoadSafetyAdvice {
   hazardChecklist: string[];
 }
 
+/** Full consolidated personalized winter smog action plan returned by `/api/smog-plan`. */
 export interface SmogActionPlan {
   generatedAt: string;
   citySummary: string;

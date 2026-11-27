@@ -1,8 +1,11 @@
 import { Clock, Play, Sparkles } from 'lucide-react';
 import type { YogaSession, YogaSessionType } from '../types/vayu';
 
-interface YogaSessionCardProps {
+/** Props accepted by {@link YogaSessionCard}. */
+export interface YogaSessionCardProps {
+  /** Individual yoga, pranayama, or lung-clearing exercise definition. */
   session: YogaSession;
+  /** Launches the visual Breathing Pacer modal pre-loaded with this session. */
   onStartTimer: (session: YogaSession) => void;
 }
 
@@ -18,6 +21,10 @@ function getTypeBadgeStyle(type: YogaSessionType): string {
   }
 }
 
+/**
+ * Editorial card presenting a single indoor yoga or breathwork session with
+ * step-by-step instructions, tailored respiratory impact, and a pacer launcher.
+ */
 export function YogaSessionCard({ session, onStartTimer }: YogaSessionCardProps) {
   const { inhaleSec, holdSec, exhaleSec } = session.pacerConfig ?? {
     inhaleSec: 4,

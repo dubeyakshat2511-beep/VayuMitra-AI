@@ -4,9 +4,13 @@ import type { BreathingPacerConfig, YogaSession } from '../types/vayu';
 
 type Phase = 'inhale' | 'hold' | 'exhale';
 
-interface BreathingPacerModalProps {
+/** Props accepted by {@link BreathingPacerModal}. */
+export interface BreathingPacerModalProps {
+  /** Selected yoga or pranayama session driving default cadence and duration. */
   session: YogaSession;
+  /** Live US AQI used to display high-smog indoor breathing precautions. */
   usAqi: number;
+  /** Closes the breathing pacer modal. */
   onClose: () => void;
 }
 
@@ -17,6 +21,10 @@ function formatTime(totalSec: number): string {
   return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 }
 
+/**
+ * Interactive visual breathing pacer modal guiding inhale, hold, and exhale
+ * phases with configurable cadences and live high-AQI precautions.
+ */
 export function BreathingPacerModal({
   session,
   usAqi,
@@ -237,7 +245,11 @@ export function BreathingPacerModal({
 
             {/* Center Numeric Readout */}
             <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
-              <span className="text-xs font-semibold uppercase tracking-wider text-slate-300">
+              <span
+                role="status"
+                aria-live="polite"
+                className="text-xs font-semibold uppercase tracking-wider text-slate-300"
+              >
                 {phaseLabel}
               </span>
               <span className="mt-1 text-4xl font-mono font-semibold text-white tabular-nums leading-none">
@@ -276,11 +288,17 @@ export function BreathingPacerModal({
             <span className="block text-[11px] font-medium text-slate-400 text-center">
               Breathing Rhythm (Inhale-Hold-Exhale seconds)
             </span>
-            <div className="flex flex-wrap justify-center gap-1.5">
+            <div
+              role="group"
+              aria-label="Breathing rhythm presets"
+              className="flex flex-wrap justify-center gap-1.5"
+            >
               {presets.map((p) => (
                 <button
                   key={p.id}
                   type="button"
+                  aria-pressed={activePreset === p.id}
+                  aria-label={`Select ${p.label} breathing rhythm`}
                   onClick={() => applyPreset(p.id, p.config)}
                   className={`px-2.5 py-1 text-xs font-mono rounded-md transition-colors cursor-pointer whitespace-nowrap ${
                     activePreset === p.id
