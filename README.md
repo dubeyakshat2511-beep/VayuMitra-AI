@@ -50,3 +50,27 @@ Instead of displaying a raw Air Quality Index (AQI) number with generic advice, 
 │  • fogHazardCalculator.ts     │       │  • gemini-3.8-live + Web     │
 │  • sessionStorage Caching     │       │    Speech API Fallback       │
 └───────────────────────────────┘       └──────────────────────────────┘
+
+
+VayuMitra-AI/
+├── index.html
+├── package.json
+├── tsconfig.json
+├── README.md
+└── src/
+    ├── App.tsx
+    ├── components/
+    │   ├── HeaderNav.tsx
+    │   ├── AirQualityMetricsCard.tsx
+    │   ├── SmokerExposurePanel.tsx
+    │   ├── FogRoadSafetyCard.tsx
+    │   └── VoiceAssistantBar.tsx
+    ├── services/
+    │   ├── airQualityService.ts
+    │   └── geminiService.ts
+    ├── utils/
+    │   ├── exposureCalculator.ts
+    │   └── fogHazardCalculator.ts
+    └── __tests__/
+        ├── airQualityAndSmoking.test.ts
+        └── voiceAndCaching.test.ts
