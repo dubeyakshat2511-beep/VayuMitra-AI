@@ -1,33 +1,52 @@
-# VayuMitra AI — Urban Air Quality & Smog Assistant
+# VayuMitra AI — Urban Air Quality & Winter Commute Safety Assistant
 
-VayuMitra AI pairs live Open-Meteo atmospheric & air quality telemetry with personalized household smog action plans, indoor lung-care yoga & athletic conditioning modules, smoker particulate burden recovery protocols, interactive Google Maps location previews, and a multilingual Web Speech voice read-aloud assistant.
+**VayuMitra AI** is a hybrid deterministic and generative AI urban air quality, respiratory protection, and winter fog road-safety co-pilot built with **React 19**, **TypeScript**, **Open-Meteo**, and the **Google Gemini API** (`@google/genai`).
+
+Instead of displaying a raw Air Quality Index (AQI) number with generic advice, VayuMitra AI translates live pollutant telemetry and meteorological conditions into personalized daily schedules, cumulative lung-burden estimates, and low-visibility road-safety protocols tailored to each user's lifestyle and household profile.
+
+---
 
 ## Key Features
 
-- **Live Telemetry & Autocomplete:** Real-time US AQI, PM2.5, PM10, 24-hour dispersion trend chart, safest outdoor window calculation, 250ms debounced location autocomplete, and interactive mini-map coordinate confirmation.
-- **Family & Lifestyle Profile:** Multi-select household vulnerabilities (Children, Elderly Parents, Asthma/Respiratory Sensitivity, Outdoor Runner/Athlete), commute type, home filtration setup, community language, and daily **Cigarettes Smoked Today** tracker with real-time combined PM2.5 lung burden calculation.
-- **Consolidated AI Smog Action Plan:** Single structured Gemini API call (with `sessionStorage` caching, cooldown protection, 429 retry, and deterministic local fallback) generating Daily Routine, Indoor Hacks, Health Yoga & Pranayama, Indoor Athletic Conditioning, Smoker Lung-Recovery Initials & Exercises, Sustainable Swaps, and RWA WhatsApp Alerts.
-- **Guided Breathing Pacer & Multilingual Voice Assistant:** Built-in visual breathing pacer modal and optional multilingual voice read-aloud assistant (English India, Hindi, Hinglish, Spanish, French, German).
+### 1. Real-Time Multi-Pollutant & Meteorological Telemetry
+* Fetches live **US AQI**, **PM2.5**, **PM10**, **NO₂**, **O₃**, **temperature**, **dew point**, **relative humidity**, and **wind speed** via the **Open-Meteo Air Quality & Weather APIs**.
+* Uses `sessionStorage` caching to minimize redundant network requests and deliver sub-second repeat lookups.
 
-## Local Development
+### 2. Personalized Household & Individual Lifestyle Profiles
+* **Individual / Solo Mode:** Tailors daily outdoor fitness windows, commute protection, and indoor ventilation advice for solo adults and daily commuters.
+* **Vulnerable Group Modes:** Adapts safety thresholds and action plans for **Seniors**, **Children**, **Asthma / Respiratory Sensitivity**, and **Outdoor Commuters**.
 
-```bash
-npm install
-npm run dev
-```
+### 3. Cumulative Lung-Burden & Smoker Exposure Protocol (`src/utils/exposureCalculator.ts`)
+* Deterministically converts ambient outdoor PM2.5 concentration into equivalent daily cigarette exposure and combines it with user-reported daily cigarette intake before invoking Gemini, preventing LLM arithmetic hallucinations.
 
-## Running Tests
+### 4. Winter Fog & Pothole Commute Shield (`src/utils/fogHazardCalculator.ts`)
+* Computes temperature–dew-point spread, humidity, wind speed, and PM2.5 smog density to classify road visibility into four deterministic risk tiers: **Clear**, **Moderate Mist**, **Dense Fog Warning**, and **Zero-Visibility Pileup Risk**.
+* Provides safe highway/urban speed caps, low-beam and amber fog-lamp checklists, pothole-braking guidance, and an interactive local hazard logger (`localStorage`) for flagging dense fog pockets and waterlogged potholes.
 
-Automated unit and integration tests run 100% offline with [Vitest](https://vitest.dev/):
+### 5. Zero-Failure Multilingual Voice Assistant
+* Supports interactive spoken briefings across **6 languages** (**English**, **Hindi**, **Hinglish**, **Spanish**, **French**, and **German**).
+* Connects via **`gemini-3.8-live`** with an automatic browser **Web Speech API** (`SpeechRecognition` + `speechSynthesis`) fallback so voice interaction works reliably even inside restricted iframe sandboxes or fluctuating networks.
 
-```bash
-npm install
-npm test
-```
+### 6. Accessible WCAG AA Dark Mode & Offline Resilience
+* Includes a persistent Sun/Moon theme toggle (`vayumitra_theme` in `localStorage` with `prefers-color-scheme: dark` system detection), semantic HTML landmarks, and `aria-live="polite"` status announcements.
+* Automatically falls back to a deterministic rule-based protocol generator if external APIs are unreachable.
 
-## Production Build
+---
 
-```bash
-npm run build
-npm start
-```
+## System Architecture
+
+```text
+┌──────────────────────────────────────────────────────────────────────┐
+│                        React 19 + TypeScript UI                      │
+│  HeaderNav • AirQualityMetricsCard • FogRoadSafetyCard • VoiceBar    │
+└───────────────────────────────┬──────────────────────────────────────┘
+                                │
+        ┌───────────────────────┴───────────────────────┐
+        ▼                                               ▼
+┌───────────────────────────────┐       ┌──────────────────────────────┐
+│   Deterministic Risk Layer    │       │    Generative AI Layer       │
+│  • Open-Meteo Telemetry API   │       │  • gemini-2.5-flash (JSON    │
+│  • exposureCalculator.ts      │──────▶│    responseSchema enforced)  │
+│  • fogHazardCalculator.ts     │       │  • gemini-3.8-live + Web     │
+│  • sessionStorage Caching     │       │    Speech API Fallback       │
+└───────────────────────────────┘       └──────────────────────────────┘
